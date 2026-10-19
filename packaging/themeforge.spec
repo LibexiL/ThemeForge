@@ -1,5 +1,5 @@
 Name:           themeforge
-Version:        2.3.0
+Version:        2.3.1
 Release:        1%{?dist}
 Summary:        One palette for kitty, cava, KDE Plasma, widgets, panels and visualizers
 
@@ -51,6 +51,9 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/themeforge.desktop
 %{_datadir}/applications/themeforge.desktop
 
 %changelog
+* Mon Oct 19 2026 LibexiL <LibexiL@users.noreply.github.com> - 2.3.1-1
+- Keep ThemeForge's desktop windows out of the taskbar
+
 * Sun Oct 18 2026 LibexiL <LibexiL@users.noreply.github.com> - 2.3.0-1
 - Animated panels and visualizers; clock, system gauges and weather panels
 

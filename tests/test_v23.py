@@ -122,3 +122,27 @@ def test_visualizer_orb_spin_and_peaks_paint(tf):
                             tf.update_peaks([], vals, 0.0), 2.0)
     qp.end()
     assert tf._closed_spline([QPointF(0, 0), QPointF(10, 0), QPointF(5, 8)]).elementCount() > 3
+
+
+def test_kwin_rule_merges_with_existing_rules_and_restores(tf, home):
+    rules = home / ".config" / "kwinrulesrc"
+    rules.parent.mkdir(parents=True)
+    original = "[General]\ncount=1\nrules=abc-123\n\n[abc-123]\nDescription=My rule\nwmclass=steam\n"
+    rules.write_text(original)
+    assert tf.ensure_kwin_rule() is True
+    assert tf.ensure_kwin_rule() is False                     # idempotent
+    assert tf.ini_get(rules, "General", "rules") == "abc-123,themeforge-desktop-windows"
+    assert tf.ini_get(rules, "General", "count") == "2"
+    assert tf.ini_get(rules, "abc-123", "wmclass") == "steam"   # user's rule untouched
+    for k, v in tf.KWIN_RULE.items():
+        assert tf.ini_get(rules, "themeforge-desktop-windows", k) == v
+    tf.restore_originals({}, lambda *_: None)
+    assert rules.read_text() == original
+
+
+def test_kwin_rule_created_from_scratch(tf, home, monkeypatch):
+    monkeypatch.setattr(tf.shutil, "which", lambda n: "/usr/bin/" + n if n == "kwin_wayland" else None)
+    assert tf.ensure_kwin_rule() is True
+    rules = home / ".config" / "kwinrulesrc"
+    assert tf.ini_get(rules, "General", "rules") == "themeforge-desktop-windows"
+    assert tf.ini_get(rules, "themeforge-desktop-windows", "title") == "themeforge-"

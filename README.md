@@ -123,6 +123,7 @@ themeforge --next-profile      switch to the next profile (bind it to a shortcut
 themeforge --list-profiles
 themeforge --update            update to the latest release
 themeforge --restore           put back every file ThemeForge changed
+themeforge --fix-windows       keep ThemeForge's desktop windows out of the taskbar
 themeforge --start-widgets     start everything marked "start at login"
 themeforge --version
 ```
@@ -136,10 +137,7 @@ bash uninstall.sh --purge    # also deletes ~/.config/themeforge
 
 ## Troubleshooting
 
-- **A widget, panel or visualizer sits on top of windows** (Plasma on Wayland):
-  1. Open System Settings → Window Management → Window Rules.
-  2. Add a rule for window titles starting with `themeforge-`.
-  3. Set "Keep below other windows" to Force.
+- **A widget, panel or visualizer shows up in the taskbar or sits on top of windows.** ThemeForge adds a KWin rule for its windows (titles starting with `themeforge-`) automatically. If they still misbehave, run `themeforge --fix-windows` and restart them, or look for "ThemeForge widgets, panels and visualizers" in System Settings → Window Management → Window Rules.
 - **Positioning is ignored.** Keep "Pin to exact position (runs through XWayland)" ticked. Native Wayland doesn't let apps choose where their windows go.
 - **Discord doesn't change.** Plain Discord can't load themes. Install [Vencord](https://vencord.dev) or [Vesktop](https://github.com/Vencord/Vesktop), apply once, then turn on "ThemeForge" in Settings → Themes.
 - **Spotify doesn't change.** Install [Spicetify](https://spicetify.app) first.

@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.1] - 2026-10-19
+
+### Fixed
+- Panels, visualizers and widgets showed up in the Plasma taskbar as blank "X" entries flagged as demanding attention, which kept an auto-hiding panel open.
+  - ThemeForge now adds a KWin window rule for its desktop windows. The rule hides them from the taskbar, pager and Alt+Tab, keeps them below other windows, and stops them from taking focus.
+  - The rule is added when the app opens and whenever a panel, visualizer or widget starts. `themeforge --fix-windows` adds it by hand, and "Restore my original files" removes it.
+
 ## [2.3.0] - 2026-10-18
 
 ### Added

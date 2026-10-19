@@ -11,6 +11,7 @@ yourself (rendered with conky) and desktop music visualizers (audio from cava).
     python3 themeforge.py --start-widgets   start widgets/visualizers marked "start at login"
     python3 themeforge.py --update          check GitHub for a newer version and install it
     python3 themeforge.py --restore         put back the config files ThemeForge changed
+    python3 themeforge.py --fix-windows     hide ThemeForge's desktop windows from the taskbar (KWin rule)
     python3 themeforge.py --version
 """
 
@@ -48,7 +49,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
                                QScrollArea, QSpinBox, QSplitter, QTabWidget,
                                QToolButton, QVBoxLayout, QWidget)
 
-VERSION = "2.3.0"
+VERSION = "2.3.1"
 # GitHub "owner/repo" the auto-updater checks for new releases
 GITHUB_REPO = "LibexiL/ThemeForge"
 HOME = Path.home()
@@ -352,6 +353,50 @@ def ini_set(path, section, key, value):
     path.write_text("\n".join(out) + "\n")
 
 
+KWIN_RULES = HOME / ".config" / "kwinrulesrc"
+KWIN_RULE_GROUP = "themeforge-desktop-windows"
+# Every window ThemeForge puts on the desktop is titled "themeforge-…" (panels, visualizers and conky widgets).
+# Force them out of the taskbar, pager and Alt+Tab, below other windows, and never focused - otherwise
+# Plasma lists them as "demanding attention", which keeps an auto-hiding panel open.
+KWIN_RULE = {"Description": "ThemeForge widgets, panels and visualizers", "title": "themeforge-", "titlematch": "2",
+             "skiptaskbar": "true", "skiptaskbarrule": "2", "skippager": "true", "skippagerrule": "2",
+             "skipswitcher": "true", "skipswitcherrule": "2", "below": "true", "belowrule": "2",
+             "acceptfocus": "false", "acceptfocusrule": "2", "fsplevel": "4", "fsplevelrule": "2"}
+
+
+def kwin_reconfigure():
+    if not shutil.which("dbus-send"):
+        return
+    try:
+        subprocess.run(["dbus-send", "--session", "--type=method_call", "--dest=org.kde.KWin", "/KWin",
+                        "org.kde.KWin.reconfigure"], capture_output=True, timeout=3)
+    except (subprocess.SubprocessError, OSError):
+        pass
+
+
+def ensure_kwin_rule():
+    """Add (or repair) the KWin rule for ThemeForge's desktop windows. Returns True if it changed anything."""
+    if not (shutil.which("kwin_wayland") or shutil.which("kwin_x11") or KWIN_RULES.exists()):
+        return False                      # not a KDE Plasma session
+    try:
+        current = {k: ini_get(KWIN_RULES, KWIN_RULE_GROUP, k) for k in KWIN_RULE}
+        listed = [x for x in (ini_get(KWIN_RULES, "General", "rules") or "").split(",") if x]
+        if current == KWIN_RULE and KWIN_RULE_GROUP in listed:
+            return False
+        backup(KWIN_RULES)
+        for k, v in KWIN_RULE.items():
+            ini_set(KWIN_RULES, KWIN_RULE_GROUP, k, v)
+        if KWIN_RULE_GROUP not in listed:
+            listed.append(KWIN_RULE_GROUP)
+        ini_set(KWIN_RULES, "General", "rules", ",".join(listed))
+        ini_set(KWIN_RULES, "General", "count", str(len(listed)))
+        kwin_reconfigure()                # KWin re-applies rules to windows that are already open
+        return True
+    except Exception as e:
+        print(f"ThemeForge: couldn't add the KWin window rule ({e})", file=sys.stderr)
+        return False
+
+
 def run_cmd(cmd, log):
     if not shutil.which(cmd[0]):
         log(f"   ! {cmd[0]} isn't installed")
@@ -404,6 +449,7 @@ def conky_pids(path, procs=None):
 def start_conky(path):
     if not shutil.which("conky"):
         return False
+    ensure_kwin_rule()
     subprocess.Popen(["conky", "-c", str(path)], stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, start_new_session=True)
     return True
@@ -1008,6 +1054,8 @@ def start_tf_process(flag, item_id=None, x11=False, log_dir=None):
     env = os.environ.copy()
     if x11:
         env["QT_QPA_PLATFORM"] = "xcb"      # XWayland lets the window place itself
+    if flag in ("--panel", "--visualizer"):
+        ensure_kwin_rule()
     args = [sys.executable, str(SCRIPT), flag] + ([item_id] if item_id else [])
     with open(log_dir / f"{item_id or flag.strip('-')}.log", "w") as log:
         subprocess.Popen(args, env=env, stdout=log, stderr=log, start_new_session=True)
@@ -2710,6 +2758,7 @@ class DesktopWindow(QWidget):
         self.setWindowFlags(flags)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WA_X11DoNotAcceptFocus)
         self.stamp = None
         self.settings = None
         self.pal = None            # palette we're heading to
@@ -3981,6 +4030,7 @@ def restore_originals(s, log):
             run_cmd([tool, icons], log)
         log(f"   icon theme back to {icons}")
     s.pop("spicetify_ready", None)
+    kwin_reconfigure()
     signal_procs("kitty", signal.SIGUSR1)
     signal_procs("cava", signal.SIGUSR1)
     log("✓ Originals restored.")
@@ -7255,6 +7305,7 @@ class MainWindow(QMainWindow):
         self.populate_presets(self.pal.get("name"))
         self.restyle()
         self.refresh_tabs()
+        ensure_kwin_rule()
         self.statusBar().showMessage(f"ThemeForge {VERSION} - edits are previewed here; "
                                      "nothing on your desktop changes until you Apply.")
         QTimer.singleShot(2500, self.maybe_check_updates)
@@ -7592,6 +7643,10 @@ def main():
             return
     if "--service" in args:
         run_service()
+        return
+    if "--fix-windows" in args:
+        print("KWin rule added - ThemeForge windows are now hidden from the taskbar." if ensure_kwin_rule()
+              else "The KWin rule is already in place (or this isn't a KDE Plasma session).")
         return
     if "--list-profiles" in args:
         s = load_settings()
