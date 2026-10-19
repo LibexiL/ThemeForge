@@ -35,7 +35,7 @@ from pathlib import Path
 
 from PySide6.QtCore import (QFileInfo, QFileSystemWatcher, QObject, QPointF, QProcess, QRectF, QSize,
                             Qt, QTimer, QUrl, Signal)
-from PySide6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QFontDatabase,
+from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QDesktopServices, QFont, QFontDatabase,
                            QFontMetricsF, QGradient, QGuiApplication, QIcon, QImage,
                            QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
                            QRadialGradient)
@@ -48,7 +48,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
                                QScrollArea, QSpinBox, QSplitter, QTabWidget,
                                QToolButton, QVBoxLayout, QWidget)
 
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 # GitHub "owner/repo" the auto-updater checks for new releases
 GITHUB_REPO = "LibexiL/ThemeForge"
 HOME = Path.home()
@@ -1067,20 +1067,41 @@ def screen_for(name):
 
 # ── panels ─────────────────────────────────────────────────────────
 
-PANEL_KINDS = [("launcher", "Games launcher"), ("nowplaying", "Now playing card")]
+PANEL_KINDS = [("launcher", "Games launcher"), ("nowplaying", "Now playing card"), ("clock", "Clock"),
+               ("system", "System gauges"), ("weather", "Weather")]
+SYSTEM_METRICS = [("cpu", "CPU"), ("ram", "RAM"), ("gpu", "GPU"), ("cputemp", "CPU temp"),
+                  ("gputemp", "GPU temp"), ("disk", "Disk"), ("net", "Network")]
+CLOCK_STYLES = [("ring", "Digital with seconds ring"), ("digital", "Digital"), ("analog", "Analog")]
+ART_STYLES = [("square", "Square"), ("vinyl", "Spinning record")]
 
 
 def panel_template(kind="launcher"):
     p = {"id": uuid.uuid4().hex[:8], "kind": kind, "name": "Panel", "title": "", "alignment": "bottom_left",
          "gap_x": 40, "gap_y": 60, "width": 360, "opacity": 75, "radius": 14, "padding": 16, "border": True,
-         "glow": False, "screen": "", "x11": True, "autostart": False,
+         "glow": False, "shimmer": False, "animations": True, "screen": "", "x11": True, "autostart": False,
+         # games launcher
          "folder": "~/Games", "columns": 4, "icon_size": 48, "labels": True,
-         "art_size": 104, "controls": True, "progress": True}
+         # now playing
+         "art_size": 104, "controls": True, "progress": True, "art_style": "square",
+         # clock
+         "clock_style": "ring", "clock_size": 44, "show_seconds": True, "show_date": True,
+         "date_format": "%A, %d %B", "twelve_hour": False,
+         # system gauges
+         "metrics": ["cpu", "ram", "gpu", "cputemp"], "gauge_size": 84, "units": "c",
+         # weather
+         "location": "", "weather_units": "us", "forecast_days": 3, "refresh": 20}
     if kind == "launcher":
         p.update(name="Games", title="GAMES")
+    elif kind == "nowplaying":
+        p.update(name="Now playing", title="NOW PLAYING", alignment="bottom_right", gap_y=220, width=400)
+    elif kind == "clock":
+        p.update(name="Clock", alignment="top_left", gap_y=40, width=260, opacity=0, border=False)
+    elif kind == "system":
+        p.update(name="System", title="SYSTEM", alignment="top_right", gap_y=40, width=420)
+    elif kind == "weather":
+        p.update(name="Weather", title="WEATHER", alignment="top_left", gap_y=320, width=360)
     else:
-        p.update(kind="nowplaying", name="Now playing", title="NOW PLAYING", alignment="bottom_right",
-                 gap_y=220, width=400)
+        p["kind"] = "launcher"
     return p
 
 
@@ -1176,15 +1197,25 @@ def launch_item(item):
     return True
 
 
+def panel_width(panel):
+    W = max(120, panel["width"])
+    if panel["kind"] == "clock" and panel["clock_style"] != "digital":
+        W = max(W, panel["clock_size"] * 3.2 + 2 * panel["padding"])
+    if panel["kind"] == "system":
+        W = max(W, panel["gauge_size"] + 2 * panel["padding"])
+    return W
+
+
 def panel_layout(panel, n_items=0):
     """Rects, relative to the panel's top-left corner, for everything on a panel; plus the full size."""
-    pad, W = panel["padding"], max(120, panel["width"])
+    pad, W = panel["padding"], panel_width(panel)
+    kind = panel["kind"]
     lay = {}
     y = pad
     if panel["title"].strip():
         lay["title"] = QRectF(pad, y, W - 2 * pad, 16)
         y += 26
-    if panel["kind"] == "launcher":
+    if kind == "launcher":
         cols = max(1, panel["columns"])
         cw = (W - 2 * pad) / cols
         ch = panel["icon_size"] + (32 if panel["labels"] else 14)
@@ -1192,7 +1223,7 @@ def panel_layout(panel, n_items=0):
         lay["items"] = [QRectF(pad + (i % cols) * cw, y + (i // cols) * ch, cw, ch) for i in range(n_items)]
         lay["empty"] = QRectF(pad, y, W - 2 * pad, ch)
         y += rows * ch
-    else:
+    elif kind == "nowplaying":
         a = max(48, panel["art_size"])
         lay["art"] = QRectF(pad, y, a, a)
         x = pad + a + 16
@@ -1215,6 +1246,59 @@ def panel_layout(panel, n_items=0):
             lay["next"] = QRectF(cx + big / 2 + 14, ty + (big - bs) / 2, bs, bs)
             ty += big
         y = max(y + a, ty)
+    elif kind == "clock":
+        cs = panel["clock_size"]
+        if panel["clock_style"] == "digital":
+            lay["time"] = QRectF(pad, y, W - 2 * pad, cs * 1.4)
+            y += cs * 1.4
+            if panel["show_date"]:
+                lay["date"] = QRectF(pad, y, W - 2 * pad, 22)
+                y += 24
+            if panel["show_seconds"]:
+                lay["secbar"] = QRectF(pad + 4, y + 6, W - 2 * pad - 8, 4)
+                y += 16
+        else:
+            D = cs * 3.2
+            lay["face"] = QRectF((W - D) / 2, y, D, D)
+            y += D
+            if panel["clock_style"] == "analog" and panel["show_date"]:
+                lay["date"] = QRectF(pad, y + 6, W - 2 * pad, 22)
+                y += 30
+    elif kind == "system":
+        mets = [m for m in panel["metrics"] if m in dict(SYSTEM_METRICS) and m != "net"]
+        g, gap = panel["gauge_size"], 14
+        cols = max(1, int((W - 2 * pad + gap) // (g + gap)))
+        cols = min(cols, max(1, len(mets)))
+        rows = math.ceil(len(mets) / cols) if mets else 0
+        cell_h = g + 26
+        lay["gauges"] = []
+        for i, m in enumerate(mets):
+            r, c = divmod(i, cols)
+            in_row = min(cols, len(mets) - r * cols)
+            x0 = pad + (W - 2 * pad - (in_row * g + (in_row - 1) * gap)) / 2
+            lay["gauges"].append((m, QRectF(x0 + c * (g + gap), y + r * cell_h, g, g)))
+        y += rows * cell_h
+        if "net" in panel["metrics"]:
+            lay["net"] = QRectF(pad, y + 2, W - 2 * pad, 20)
+            y += 26
+        if not mets and "net" not in panel["metrics"]:
+            lay["empty"] = QRectF(pad, y, W - 2 * pad, 40)
+            y += 40
+    elif kind == "weather":
+        ic = 78
+        lay["wicon"] = QRectF(pad - 4, y, ic, ic)
+        x = pad + ic + 10
+        tw = max(40, W - pad - x)
+        lay["wtemp"] = QRectF(x, y + 2, tw, 38)
+        lay["wdesc"] = QRectF(x, y + 40, tw, 18)
+        lay["wmore"] = QRectF(x, y + 59, tw, 16)
+        y += ic
+        n = max(0, min(3, panel["forecast_days"]))
+        if n:
+            y += 12
+            cw = (W - 2 * pad) / n
+            lay["days"] = [QRectF(pad + i * cw, y, cw, 76) for i in range(n)]
+            y += 76
     return lay, QRectF(0, 0, W, y + pad)
 
 
@@ -1225,7 +1309,7 @@ def panel_rect(panel, g, n_items=None):
 
 
 def panel_hit(panel, n_items, pos):
-    lay, _ = panel_layout(panel, n_items)
+    lay, full = panel_layout(panel, n_items)
     for i, r in enumerate(lay.get("items", [])):
         if r.contains(pos):
             return ("item", i)
@@ -1235,6 +1319,8 @@ def panel_hit(panel, n_items, pos):
     if "progress_hit" in lay and lay["progress_hit"].contains(pos):
         r = lay["progress"]
         return ("seek", clamp((pos.x() - r.left()) / r.width()))
+    if panel["kind"] == "weather" and full.contains(pos):
+        return ("forecast", None)
     return None
 
 
@@ -1278,16 +1364,36 @@ def _draw_transport_icon(qp, kind, r, col):
     qp.restore()
 
 
+def ease_out(k):
+    k = clamp(k)
+    return 1 - (1 - k) ** 3
+
+
+def _alpha(col, a):
+    c = QColor(col)
+    c.setAlphaF(clamp(a))
+    return c
+
+
 def paint_panel(qp, origin, panel, p, state):
-    """Draw a panel with its top-left corner at origin. state: items, icons, hover, np, art, glow."""
+    """Draw a panel with its top-left corner at origin.
+
+    state: t (seconds, drives ambient motion), appear (0..1 fade-in), glow (bass 0..1), plus kind-specific
+    data - items/icons/hover/hover_amt/press/ripples (launcher), np/art/art_prev/art_mix/vinyl/title_since
+    (now playing), now (clock), stats/shown (system), weather (weather)."""
     items = state.get("items", [])
     lay, full = panel_layout(panel, len(items))
-    bg, fg, mu, ac = p["background"], p["foreground"], p["muted"], p["accent"]
-    hover = state.get("hover")
+    t = state.get("t", 0.0)
+    anim = panel.get("animations", True)
+    bg, ac = p["background"], p["accent"]
     qp.save()
     qp.setRenderHint(QPainter.Antialiasing)
     qp.setRenderHint(QPainter.SmoothPixmapTransform)
     qp.translate(origin)
+    appear = ease_out(state.get("appear", 1.0)) if anim else 1.0
+    if appear < 1:
+        qp.setOpacity(qp.opacity() * appear)
+        qp.translate(0, (1 - appear) * 12)
     rad = panel["radius"]
     body = QPainterPath()
     body.addRoundedRect(full, rad, rad)
@@ -1298,14 +1404,22 @@ def paint_panel(qp, origin, panel, p, state):
             grow = k * 3
             outer = QPainterPath()
             outer.addRoundedRect(full.adjusted(-grow, -grow, grow, grow), rad + grow, rad + grow)
-            col = QColor(ac)
-            col.setAlphaF(clamp(glow * 0.09))
-            qp.fillPath(outer.subtracted(body), col)
+            qp.fillPath(outer.subtracted(body), _alpha(ac, glow * 0.09))
 
-    back = QColor(bg)
-    back.setAlphaF(clamp(panel["opacity"] / 100))
-    qp.fillPath(body, back)
-    if panel["border"] or glow > 0.02:
+    qp.fillPath(body, _alpha(bg, panel["opacity"] / 100))
+    if panel.get("shimmer") and anim:
+        g = QConicalGradient(full.center(), (-t * 70) % 360)
+        g.setColorAt(0.0, _alpha(ac, 0.95))
+        g.setColorAt(0.10, _alpha(p["accent2"], 0.8))
+        g.setColorAt(0.24, _alpha(ac, 0.0))
+        g.setColorAt(0.50, _alpha(ac, 0.0))
+        g.setColorAt(0.60, _alpha(p["accent2"], 0.55))
+        g.setColorAt(0.74, _alpha(ac, 0.0))
+        g.setColorAt(1.0, _alpha(ac, 0.95))
+        qp.setPen(QPen(QBrush(g), 1.8))
+        qp.setBrush(Qt.NoBrush)
+        qp.drawPath(body)
+    elif panel["border"] or glow > 0.02:
         edge = QColor(mix(bg, ac, 0.4))
         if glow > 0.02:
             edge = QColor(mix(mix(bg, ac, 0.4), ac, clamp(glow)))
@@ -1313,115 +1427,633 @@ def paint_panel(qp, origin, panel, p, state):
         qp.setBrush(Qt.NoBrush)
         qp.drawPath(body)
 
+    qp.save()
+    qp.setClipPath(body)
     if "title" in lay:
         f = _font(8.5, True)
         f.setLetterSpacing(QFont.AbsoluteSpacing, 1.2)
         qp.setFont(f)
         qp.setPen(QColor(ac))
         qp.drawText(lay["title"], Qt.AlignLeft | Qt.AlignVCenter, panel["title"])
+    painter = {"launcher": _paint_launcher, "nowplaying": _paint_nowplaying, "clock": _paint_clock,
+               "system": _paint_system, "weather": _paint_weather}[panel["kind"]]
+    painter(qp, lay, panel, p, state, t if anim else 0.0, anim)
+    qp.restore()
+    qp.restore()
+    return full
 
-    if panel["kind"] == "launcher":
-        icons = state.get("icons", {})
-        isz = panel["icon_size"]
-        if not items:
-            qp.setFont(_font(9))
-            qp.setPen(QColor(mu))
-            qp.drawText(lay["empty"], Qt.AlignCenter | Qt.TextWordWrap,
-                        f"Put game shortcuts in {panel['folder']}")
-        for i, (it, r) in enumerate(zip(items, lay["items"])):
-            if hover == ("item", i):
-                hl = QColor(ac)
-                hl.setAlphaF(0.2)
-                qp.setPen(Qt.NoPen)
-                qp.setBrush(hl)
-                qp.drawRoundedRect(r.adjusted(3, 2, -3, -2), 8, 8)
-            ic = icons.get(it["path"])
-            ir = QRectF(r.center().x() - isz / 2, r.top() + 7, isz, isz)
-            if ic is not None and not ic.isNull():
-                ic.paint(qp, ir.toRect())
-            else:
-                qp.setPen(Qt.NoPen)
-                qp.setBrush(QColor(mix(bg, ac, 0.5)))
-                qp.drawRoundedRect(ir, isz * 0.22, isz * 0.22)
-                qp.setPen(QColor(best_text(mix(bg, ac, 0.5), p)))
-                qp.setFont(_font(isz * 0.3, True))
-                qp.drawText(ir, Qt.AlignCenter, it["name"][:1].upper())
-            if panel["labels"]:
-                qp.setFont(_font(8.5))
-                qp.setPen(QColor(fg if hover == ("item", i) else mix(fg, mu, 0.35)))
-                lr = QRectF(r.left() + 3, ir.bottom() + 4, r.width() - 6, 16)
-                text = QFontMetricsF(qp.font()).elidedText(it["name"], Qt.ElideRight, lr.width())
-                qp.drawText(lr, Qt.AlignHCenter | Qt.AlignTop, text)
+
+# ── launcher ───────────────────────────────────────────────────────
+
+def _paint_launcher(qp, lay, panel, p, state, t, anim):
+    items, icons = state.get("items", []), state.get("icons", {})
+    hover, amt, press = state.get("hover"), state.get("hover_amt", {}), state.get("press", {})
+    bg, fg, mu, ac = p["background"], p["foreground"], p["muted"], p["accent"]
+    isz = panel["icon_size"]
+    if not items:
+        qp.setFont(_font(9))
+        qp.setPen(QColor(mu))
+        qp.drawText(lay["empty"], Qt.AlignCenter | Qt.TextWordWrap, f"Put game shortcuts in {panel['folder']}")
+    for i, (it, r) in enumerate(zip(items, lay["items"])):
+        h = amt.get(i, 1.0 if hover == ("item", i) else 0.0) if anim else (1.0 if hover == ("item", i) else 0.0)
+        pr = press.get(i, 0.0) if anim else 0.0
+        if h > 0.01:
+            qp.setPen(Qt.NoPen)
+            qp.setBrush(_alpha(ac, 0.18 * h))
+            qp.drawRoundedRect(r.adjusted(3, 2, -3, -2), 9, 9)
+            halo = QRadialGradient(QPointF(r.center().x(), r.top() + 7 + isz / 2), isz * 0.8)
+            halo.setColorAt(0, _alpha(ac, 0.35 * h))
+            halo.setColorAt(1, _alpha(ac, 0))
+            qp.setBrush(QBrush(halo))
+            qp.drawEllipse(QPointF(r.center().x(), r.top() + 7 + isz / 2), isz * 0.8, isz * 0.8)
+        scale = 1 + 0.10 * h - 0.12 * pr
+        s = isz * scale
+        cy = r.top() + 7 + isz / 2 - 4 * h + 2 * pr
+        ir = QRectF(r.center().x() - s / 2, cy - s / 2, s, s)
+        ic = icons.get(it["path"])
+        if ic is not None and not ic.isNull():
+            ic.paint(qp, ir.toRect())
+        else:
+            tile = mix(bg, ac, 0.5 + 0.2 * h)
+            qp.setPen(Qt.NoPen)
+            qp.setBrush(QColor(tile))
+            qp.drawRoundedRect(ir, s * 0.22, s * 0.22)
+            qp.setPen(QColor(best_text(tile, p)))
+            qp.setFont(_font(s * 0.3, True))
+            qp.drawText(ir, Qt.AlignCenter, it["name"][:1].upper())
+        if panel["labels"]:
+            qp.setFont(_font(8.5))
+            qp.setPen(QColor(mix(mix(fg, mu, 0.35), fg, h)))
+            lr = QRectF(r.left() + 3, r.top() + 7 + isz + 4, r.width() - 6, 16)
+            text = QFontMetricsF(qp.font()).elidedText(it["name"], Qt.ElideRight, lr.width())
+            qp.drawText(lr, Qt.AlignHCenter | Qt.AlignTop, text)
+    for x, y, age in state.get("ripples", []):
+        k = clamp(age / 0.55)
+        qp.setPen(Qt.NoPen)
+        qp.setBrush(_alpha(ac, 0.35 * (1 - k)))
+        qp.drawEllipse(QPointF(x, y), 6 + k * 70, 6 + k * 70)
+
+
+# ── now playing ────────────────────────────────────────────────────
+
+def _draw_art(qp, rect, pm, opacity=1.0):
+    if pm is None or pm.isNull():
+        return
+    sc = pm.scaled(rect.size().toSize(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+    qp.save()
+    qp.setOpacity(qp.opacity() * opacity)
+    qp.drawPixmap(rect, sc, QRectF((sc.width() - rect.width()) / 2, (sc.height() - rect.height()) / 2,
+                                   rect.width(), rect.height()))
+    qp.restore()
+
+
+def _art_placeholder(qp, rect, p):
+    g = QLinearGradient(rect.topLeft(), rect.bottomRight())
+    _stops(g, p["gradient"])
+    qp.fillRect(rect, g)
+    qp.setPen(QColor(best_text(p["gradient"][0], p)))
+    qp.setFont(_font(rect.height() * 0.3, True))
+    qp.drawText(rect, Qt.AlignCenter, "♪")
+
+
+def _marquee(qp, rect, text, t, since, anim):
+    fm = QFontMetricsF(qp.font())
+    w = fm.horizontalAdvance(text)
+    if w <= rect.width() or not anim:
+        qp.drawText(rect, Qt.AlignLeft | Qt.AlignVCenter, fm.elidedText(text, Qt.ElideRight, rect.width()))
+        return
+    gap, speed, pause = 48.0, 32.0, 2.0
+    cycle = pause + (w + gap) / speed
+    k = (t - since) % cycle
+    off = 0.0 if k < pause else (k - pause) * speed
+    qp.save()
+    qp.setClipRect(rect)
+    base = rect.top() + (rect.height() + fm.ascent() - fm.descent()) / 2
+    qp.drawText(QPointF(rect.left() - off, base), text)
+    qp.drawText(QPointF(rect.left() - off + w + gap, base), text)
+    qp.restore()
+
+
+def _paint_nowplaying(qp, lay, panel, p, state, t, anim):
+    bg, fg, mu, ac = p["background"], p["foreground"], p["muted"], p["accent"]
+    np = state.get("np") or {}
+    hover = state.get("hover")
+    playing = np.get("status") == "Playing"
+    ar = lay["art"]
+    art, prev, mixk = state.get("art"), state.get("art_prev"), state.get("art_mix", 1.0) if anim else 1.0
+    if panel.get("art_style") == "vinyl":
+        c = ar.center()
+        R = ar.width() / 2
+        qp.setPen(Qt.NoPen)
+        disc = QRadialGradient(c, R)
+        disc.setColorAt(0, QColor("#2a2a2e"))
+        disc.setColorAt(1, QColor("#0c0c0e"))
+        qp.setBrush(QBrush(disc))
+        qp.drawEllipse(c, R, R)
+        qp.setBrush(Qt.NoBrush)
+        for k in range(5):
+            qp.setPen(QPen(_alpha("#ffffff", 0.05 + 0.02 * (k % 2)), 1))
+            rr = R * (0.62 + k * 0.075)
+            qp.drawEllipse(c, rr, rr)
+        sheen = QConicalGradient(c, 45)
+        sheen.setColorAt(0.0, _alpha("#ffffff", 0.10))
+        sheen.setColorAt(0.12, _alpha("#ffffff", 0.0))
+        sheen.setColorAt(0.5, _alpha("#ffffff", 0.10))
+        sheen.setColorAt(0.62, _alpha("#ffffff", 0.0))
+        sheen.setColorAt(1.0, _alpha("#ffffff", 0.10))
+        qp.setPen(Qt.NoPen)
+        qp.setBrush(QBrush(sheen))
+        qp.drawEllipse(c, R, R)
+        lr = QRectF(c.x() - R * 0.55, c.y() - R * 0.55, R * 1.1, R * 1.1)
+        qp.save()
+        qp.translate(c)
+        qp.rotate(state.get("vinyl", 0.0))
+        qp.translate(-c)
+        clip = QPainterPath()
+        clip.addEllipse(lr)
+        qp.setClipPath(clip, Qt.IntersectClip)
+        if art is None or art.isNull():
+            _art_placeholder(qp, lr, p)
+        else:
+            _draw_art(qp, lr, prev, 1 - mixk)
+            _draw_art(qp, lr, art, mixk)
+        qp.restore()
+        qp.setPen(Qt.NoPen)
+        qp.setBrush(QColor(bg))
+        qp.drawEllipse(c, R * 0.06, R * 0.06)
     else:
-        np = state.get("np") or {}
-        art = state.get("art")
-        ar = lay["art"]
         clip = QPainterPath()
         clip.addRoundedRect(ar, 10, 10)
         qp.save()
-        qp.setClipPath(clip)
-        if art is not None and not art.isNull():
-            pm = art.scaled(ar.size().toSize(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-            qp.drawPixmap(ar, pm, QRectF((pm.width() - ar.width()) / 2, (pm.height() - ar.height()) / 2,
-                                         ar.width(), ar.height()))
+        qp.setClipPath(clip, Qt.IntersectClip)
+        if (art is None or art.isNull()) and (prev is None or prev.isNull()):
+            _art_placeholder(qp, ar, p)
         else:
-            g = QLinearGradient(ar.topLeft(), ar.bottomRight())
-            _stops(g, p["gradient"])
-            qp.fillRect(ar, g)
-            qp.setPen(QColor(best_text(p["gradient"][0], p)))
-            qp.setFont(_font(ar.height() * 0.3, True))
-            qp.drawText(ar, Qt.AlignCenter, "♪")
+            if art is None or art.isNull():
+                _art_placeholder(qp, ar, p)
+            _draw_art(qp, ar, prev, 1 - mixk)
+            _draw_art(qp, ar, art, mixk)
         qp.restore()
-        playing = np.get("status") == "Playing"
-        title = np.get("title") or ("Nothing playing" if not np else "Unknown title")
-        qp.setFont(_font(11.5, True))
-        qp.setPen(QColor(fg))
-        fm = QFontMetricsF(qp.font())
-        qp.drawText(lay["song"], Qt.AlignLeft | Qt.AlignVCenter, fm.elidedText(title, Qt.ElideRight,
-                                                                               lay["song"].width()))
-        qp.setFont(_font(9.5))
-        qp.setPen(QColor(ac))
-        fm = QFontMetricsF(qp.font())
-        qp.drawText(lay["artist"], Qt.AlignLeft | Qt.AlignVCenter,
-                    fm.elidedText(np.get("artist") or "", Qt.ElideRight, lay["artist"].width()))
-        if "progress" in lay:
-            r = lay["progress"]
-            length, pos = np.get("length"), np.get("position")
-            frac = clamp(pos / length) if length and pos is not None else 0
-            qp.setPen(Qt.NoPen)
-            qp.setBrush(QColor(mix(bg, fg, 0.18)))
-            qp.drawRoundedRect(r, 2.5, 2.5)
-            if frac > 0:
-                g = QLinearGradient(r.topLeft(), r.topRight())
-                _stops(g, [p["accent2"], p["accent"]])
-                qp.setBrush(QBrush(g))
-                qp.drawRoundedRect(QRectF(r.left(), r.top(), max(5, r.width() * frac), r.height()), 2.5, 2.5)
-                if hover and hover[0] == "seek":
-                    qp.setBrush(QColor(fg))
-                    qp.drawEllipse(QPointF(r.left() + r.width() * frac, r.center().y()), 5, 5)
-            qp.setFont(_font(8))
-            qp.setPen(QColor(mu))
-            qp.drawText(lay["times"], Qt.AlignLeft | Qt.AlignVCenter, fmt_time(pos) if np else "")
-            qp.drawText(lay["times"], Qt.AlignRight | Qt.AlignVCenter, fmt_time(length) if np else "")
-        for key in ("prev", "play", "next"):
-            if key not in lay:
-                continue
-            r = lay[key]
-            if key == "play":
+
+    title = np.get("title") or ("Nothing playing" if not np else "Unknown title")
+    qp.setFont(_font(11.5, True))
+    qp.setPen(QColor(fg))
+    sr = QRectF(lay["song"])
+    if playing and anim:                       # little equalizer next to the title
+        sr.setWidth(sr.width() - 22)
+        qp.save()
+        qp.setPen(Qt.NoPen)
+        qp.setBrush(QColor(ac))
+        bx = lay["song"].right() - 16
+        for k in range(4):
+            hk = 4 + 10 * abs(math.sin(t * (5.0 + k * 1.7) + k))
+            qp.drawRoundedRect(QRectF(bx + k * 4.2, lay["song"].bottom() - 5 - hk, 3, hk), 1, 1)
+        qp.restore()
+    _marquee(qp, sr, title, t, state.get("title_since", 0.0), anim)
+    qp.setFont(_font(9.5))
+    qp.setPen(QColor(ac))
+    _marquee(qp, lay["artist"], np.get("artist") or "", t, state.get("title_since", 0.0), anim)
+    if "progress" in lay:
+        r = lay["progress"]
+        length, pos = np.get("length"), np.get("position")
+        frac = clamp(pos / length) if length and pos is not None else 0
+        qp.setPen(Qt.NoPen)
+        qp.setBrush(QColor(mix(bg, fg, 0.18)))
+        qp.drawRoundedRect(r, 2.5, 2.5)
+        if frac > 0:
+            g = QLinearGradient(r.topLeft(), r.topRight())
+            _stops(g, [p["accent2"], ac])
+            qp.setBrush(QBrush(g))
+            fill = QRectF(r.left(), r.top(), max(5, r.width() * frac), r.height())
+            qp.drawRoundedRect(fill, 2.5, 2.5)
+            if playing and anim:                # soft light travelling along the bar
+                sx = fill.left() + (t * 60) % max(1, fill.width() + 40) - 20
+                sg = QLinearGradient(sx - 20, 0, sx + 20, 0)
+                sg.setColorAt(0, _alpha("#ffffff", 0))
+                sg.setColorAt(0.5, _alpha("#ffffff", 0.45))
+                sg.setColorAt(1, _alpha("#ffffff", 0))
+                qp.save()
+                qp.setClipRect(fill)
+                qp.setBrush(QBrush(sg))
+                qp.drawRect(fill)
+                qp.restore()
+            if hover and hover[0] == "seek":
+                qp.setBrush(QColor(fg))
+                qp.drawEllipse(QPointF(r.left() + r.width() * frac, r.center().y()), 5, 5)
+        qp.setFont(_font(8))
+        qp.setPen(QColor(mu))
+        qp.drawText(lay["times"], Qt.AlignLeft | Qt.AlignVCenter, fmt_time(pos) if np else "")
+        qp.drawText(lay["times"], Qt.AlignRight | Qt.AlignVCenter, fmt_time(length) if np else "")
+    pulse = state.get("glow", 0.0) if (playing and anim) else 0.0
+    for key in ("prev", "play", "next"):
+        if key not in lay:
+            continue
+        r = lay[key]
+        if key == "play":
+            g = 1 + 0.10 * pulse
+            r = QRectF(r.center().x() - r.width() * g / 2, r.center().y() - r.height() * g / 2,
+                       r.width() * g, r.height() * g)
+            if pulse > 0.05:
                 qp.setPen(Qt.NoPen)
-                qp.setBrush(QColor(mix(ac, fg, 0.15) if hover == ("play", None) else ac))
+                qp.setBrush(_alpha(ac, 0.25 * pulse))
+                qp.drawEllipse(r.adjusted(-5, -5, 5, 5))
+            qp.setPen(Qt.NoPen)
+            qp.setBrush(QColor(mix(ac, fg, 0.15) if hover == ("play", None) else ac))
+            qp.drawEllipse(r)
+            _draw_transport_icon(qp, "pause" if playing else "play", r, best_text(ac, p))
+        else:
+            if hover == (key, None):
+                qp.setPen(Qt.NoPen)
+                qp.setBrush(_alpha(ac, 0.22))
                 qp.drawEllipse(r)
-                _draw_transport_icon(qp, "pause" if playing else "play", r, best_text(ac, p))
-            else:
-                if hover == (key, None):
-                    hl = QColor(ac)
-                    hl.setAlphaF(0.22)
+            _draw_transport_icon(qp, key, r, fg)
+
+
+# ── clock ──────────────────────────────────────────────────────────
+
+def _paint_clock(qp, lay, panel, p, state, t, anim):
+    bg, fg, mu, ac, ac2 = (p[k] for k in ("background", "foreground", "muted", "accent", "accent2"))
+    now = state.get("now") or time.time()
+    lt = time.localtime(now)
+    frac = now % 1 if anim else 0.0
+    sec = lt.tm_sec + frac
+    twelve = panel["twelve_hour"]
+    hh = time.strftime("%I", lt).lstrip("0") if twelve else time.strftime("%H", lt)
+    mm = time.strftime("%M", lt)
+    ampm = time.strftime("%p", lt) if twelve else ""
+    try:
+        date = time.strftime(panel["date_format"], lt)
+    except ValueError:
+        date = panel["date_format"]
+    style = panel["clock_style"]
+    cs = panel["clock_size"]
+
+    def draw_time(rect, size):
+        f = _font(size * 0.75, True)
+        qp.setFont(f)
+        fm = QFontMetricsF(f)
+        small = _font(size * 0.26, True)
+        parts = [hh, ":", mm]
+        w = sum(fm.horizontalAdvance(x) for x in parts)
+        aw = QFontMetricsF(small).horizontalAdvance(" " + ampm) if ampm else 0
+        x = rect.center().x() - (w + aw) / 2
+        y = rect.center().y() + (fm.ascent() - fm.descent()) / 2
+        base_op = qp.opacity()
+        blink = 0.35 + 0.65 * (0.5 + 0.5 * math.cos(2 * math.pi * frac)) if anim and panel["show_seconds"] else 1.0
+        for k, part in enumerate(parts):
+            qp.setOpacity(base_op * (blink if k == 1 else 1.0))
+            qp.setPen(QColor(ac if k == 1 else fg))
+            qp.drawText(QPointF(x, y), part)
+            x += fm.horizontalAdvance(part)
+        qp.setOpacity(base_op)
+        if ampm:
+            qp.setFont(small)
+            qp.setPen(QColor(mu))
+            qp.drawText(QPointF(x, y), " " + ampm)
+
+    if style == "digital":
+        op = qp.opacity()
+        draw_time(lay["time"], cs * 1.25)
+        qp.setOpacity(op)
+        if "date" in lay:
+            qp.setFont(_font(max(8, cs * 0.24)))
+            qp.setPen(QColor(ac))
+            qp.drawText(lay["date"], Qt.AlignCenter, date)
+        if "secbar" in lay:
+            r = lay["secbar"]
+            qp.setPen(Qt.NoPen)
+            qp.setBrush(_alpha(fg, 0.12))
+            qp.drawRoundedRect(r, 2, 2)
+            k = sec / 60
+            g = QLinearGradient(r.topLeft(), r.topRight())
+            _stops(g, [ac2, ac])
+            qp.setBrush(QBrush(g))
+            qp.drawRoundedRect(QRectF(r.left(), r.top(), max(4, r.width() * k), r.height()), 2, 2)
+            tip = QPointF(r.left() + r.width() * k, r.center().y())
+            halo = QRadialGradient(tip, 9)
+            halo.setColorAt(0, _alpha(ac, 0.8))
+            halo.setColorAt(1, _alpha(ac, 0))
+            qp.setBrush(QBrush(halo))
+            qp.drawEllipse(tip, 9, 9)
+        return
+
+    face = lay["face"]
+    c = face.center()
+    R = face.width() / 2
+    if style == "ring":
+        wd = max(4.0, R * 0.07)
+        ring = face.adjusted(wd, wd, -wd, -wd)
+        qp.setBrush(Qt.NoBrush)
+        qp.setPen(QPen(_alpha(fg, 0.10), wd, Qt.SolidLine, Qt.RoundCap))
+        qp.drawEllipse(ring)
+        if panel["show_seconds"]:
+            k = sec / 60
+            g = QConicalGradient(c, 90)
+            g.setColorAt(0.0, QColor(ac))
+            g.setColorAt(1 - max(0.001, k), QColor(ac2))
+            g.setColorAt(1.0, QColor(ac))
+            qp.setPen(QPen(QBrush(g), wd, Qt.SolidLine, Qt.RoundCap))
+            qp.drawArc(ring, 90 * 16, -int(k * 360 * 16))
+            a = math.radians(90 - k * 360)
+            tip = QPointF(c.x() + ring.width() / 2 * math.cos(a), c.y() - ring.height() / 2 * math.sin(a))
+            halo = QRadialGradient(tip, wd * 2.4)
+            halo.setColorAt(0, _alpha(ac, 0.9))
+            halo.setColorAt(1, _alpha(ac, 0))
+            qp.setPen(Qt.NoPen)
+            qp.setBrush(QBrush(halo))
+            qp.drawEllipse(tip, wd * 2.4, wd * 2.4)
+        tr = QRectF(face.left(), c.y() - cs * 0.62, face.width(), cs * 0.95)
+        op = qp.opacity()
+        draw_time(tr, cs)
+        qp.setOpacity(op)
+        if panel["show_date"]:
+            dr = QRectF(face.left() + R * 0.22, c.y() + cs * 0.38, face.width() - R * 0.44, cs * 0.4)
+            size = max(7.0, cs * 0.2)
+            while size > 6.5 and QFontMetricsF(_font(size)).horizontalAdvance(date) > dr.width():
+                size -= 0.5                     # shrink to fit inside the ring before eliding
+            qp.setFont(_font(size))
+            qp.setPen(QColor(mu))
+            qp.drawText(dr, Qt.AlignCenter, QFontMetricsF(qp.font()).elidedText(date, Qt.ElideRight, dr.width()))
+        return
+
+    # analog
+    qp.setPen(QPen(_alpha(fg, 0.15), 1.2))
+    qp.setBrush(_alpha(mix(bg, p["surface"], 0.5), 0.55))
+    qp.drawEllipse(c, R - 1, R - 1)
+    for k in range(60):
+        a = math.radians(k * 6)
+        big = k % 5 == 0
+        r1, r2 = R * (0.84 if big else 0.9), R * 0.95
+        qp.setPen(QPen(QColor(ac2) if big else _alpha(fg, 0.35), 2.2 if big else 1, Qt.SolidLine, Qt.RoundCap))
+        qp.drawLine(QPointF(c.x() + r1 * math.sin(a), c.y() - r1 * math.cos(a)),
+                    QPointF(c.x() + r2 * math.sin(a), c.y() - r2 * math.cos(a)))
+
+    def hand(angle_deg, length, width, col, tail=0.0):
+        a = math.radians(angle_deg)
+        qp.setPen(QPen(QColor(col), width, Qt.SolidLine, Qt.RoundCap))
+        qp.drawLine(QPointF(c.x() - tail * math.sin(a), c.y() + tail * math.cos(a)),
+                    QPointF(c.x() + length * math.sin(a), c.y() - length * math.cos(a)))
+    minute = lt.tm_min + sec / 60
+    hour = lt.tm_hour % 12 + minute / 60
+    hand(hour * 30, R * 0.5, max(3, R * 0.06), fg)
+    hand(minute * 6, R * 0.74, max(2, R * 0.04), fg)
+    if panel["show_seconds"]:
+        hand(sec * 6, R * 0.82, 1.6, ac, tail=R * 0.15)
+    qp.setPen(Qt.NoPen)
+    qp.setBrush(QColor(ac))
+    qp.drawEllipse(c, R * 0.045, R * 0.045)
+    if "date" in lay:
+        qp.setFont(_font(max(8, cs * 0.24)))
+        qp.setPen(QColor(ac))
+        qp.drawText(lay["date"], Qt.AlignCenter, date)
+
+
+# ── system gauges ──────────────────────────────────────────────────
+
+def fmt_rate(bps):
+    for unit, size in (("GB/s", 1e9), ("MB/s", 1e6), ("KB/s", 1e3)):
+        if bps >= size:
+            return f"{bps / size:.1f} {unit}"
+    return f"{int(bps)} B/s"
+
+
+def _paint_system(qp, lay, panel, p, state, t, anim):
+    bg, fg, mu, ac, ac2 = (p[k] for k in ("background", "foreground", "muted", "accent", "accent2"))
+    stats, shown = state.get("stats") or {}, state.get("shown") or {}
+    names = dict(SYSTEM_METRICS)
+    if "empty" in lay:
+        qp.setFont(_font(9))
+        qp.setPen(QColor(mu))
+        qp.drawText(lay["empty"], Qt.AlignCenter, "Pick what to show in ThemeForge")
+    for m, r in lay["gauges"]:
+        target, text = stats.get(m, (0.0, "–"))
+        frac = clamp(shown.get(m, target))
+        wd = max(4.0, r.width() * 0.085)
+        arc = r.adjusted(wd, wd, -wd, -wd)
+        qp.setBrush(Qt.NoBrush)
+        qp.setPen(QPen(_alpha(fg, 0.10), wd, Qt.SolidLine, Qt.RoundCap))
+        qp.drawArc(arc, 225 * 16, -270 * 16)
+        hot = frac > 0.85
+        col = p["ansi"][1] if hot else ac
+        if frac > 0.003:
+            g = QConicalGradient(arc.center(), 225)
+            g.setColorAt(0.0, QColor(ac2))
+            g.setColorAt(0.75, QColor(col))
+            g.setColorAt(1.0, QColor(ac2))
+            qp.setPen(QPen(QBrush(g), wd, Qt.SolidLine, Qt.RoundCap))
+            qp.drawArc(arc, 225 * 16, -int(frac * 270 * 16))
+            a = math.radians(225 - frac * 270)
+            tip = QPointF(arc.center().x() + arc.width() / 2 * math.cos(a),
+                          arc.center().y() - arc.height() / 2 * math.sin(a))
+            pulse = 0.55 + 0.45 * math.sin(t * 3 + r.left() * 0.05) if anim else 0.8
+            halo = QRadialGradient(tip, wd * 1.9)
+            halo.setColorAt(0, _alpha(col, 0.75 * pulse))
+            halo.setColorAt(1, _alpha(col, 0))
+            qp.setPen(Qt.NoPen)
+            qp.setBrush(QBrush(halo))
+            qp.drawEllipse(tip, wd * 1.9, wd * 1.9)
+        qp.setFont(_font(max(7, r.height() * 0.16), True))
+        qp.setPen(QColor(fg))
+        qp.drawText(r, Qt.AlignCenter, text)
+        qp.setFont(_font(8.5))
+        qp.setPen(QColor(mu))
+        qp.drawText(QRectF(r.left() - 10, r.bottom() + 2, r.width() + 20, 18), Qt.AlignHCenter | Qt.AlignTop,
+                    names.get(m, m))
+    if "net" in lay:
+        down, up = stats.get("net", (0.0, 0.0))
+        r = lay["net"]
+        qp.setFont(_font(9))
+        half = QRectF(r.left(), r.top(), r.width() / 2, r.height())
+        for k, (label, val, col) in enumerate((("Down", down, ac2), ("Up", up, ac))):
+            hr = half.translated(k * r.width() / 2, 0)
+            qp.setPen(QColor(mu))
+            qp.drawText(hr, Qt.AlignLeft | Qt.AlignVCenter, label)
+            qp.setPen(QColor(col))
+            qp.drawText(hr.adjusted(0, 0, -12, 0), Qt.AlignRight | Qt.AlignVCenter, fmt_rate(val))
+
+
+# ── weather ────────────────────────────────────────────────────────
+
+WEATHER_CODES = {
+    "clear": (113,), "partly": (116,), "cloudy": (119, 122), "fog": (143, 248, 260),
+    "rain": (176, 263, 266, 293, 296, 299, 302, 305, 308, 353, 356, 359),
+    "snow": (179, 227, 230, 323, 326, 329, 332, 335, 338, 368, 371, 392, 395),
+    "sleet": (182, 185, 281, 284, 311, 314, 317, 320, 350, 362, 365, 374, 377),
+    "thunder": (200, 386, 389)}
+
+
+def weather_kind(code):
+    for kind, codes in WEATHER_CODES.items():
+        if code in codes:
+            return kind
+    return "cloudy"
+
+
+def _cloud_path(cx, cy, s):
+    path = QPainterPath()
+    path.setFillRule(Qt.WindingFill)           # overlapping puffs merge instead of cutting holes
+    path.addEllipse(QPointF(cx - s * 0.32, cy + s * 0.06), s * 0.26, s * 0.22)
+    path.addEllipse(QPointF(cx + s * 0.02, cy - s * 0.1), s * 0.32, s * 0.3)
+    path.addEllipse(QPointF(cx + s * 0.34, cy + s * 0.06), s * 0.24, s * 0.2)
+    path.addRoundedRect(QRectF(cx - s * 0.56, cy + s * 0.02, s * 1.12, s * 0.26), s * 0.13, s * 0.13)
+    return path.simplified()
+
+
+def draw_weather_icon(qp, rect, kind, t, p, night=False):
+    """Animated weather icon drawn in the palette's colors; t (seconds) drives the motion."""
+    fg, bg = p["foreground"], p["background"]
+    sun_col, wet, bolt = p["ansi"][3], p["ansi"][6], p["ansi"][3]
+    cloud_col = mix(fg, bg, 0.12)
+    s = min(rect.width(), rect.height())
+    cx, cy = rect.center().x(), rect.center().y()
+    qp.save()
+    qp.setRenderHint(QPainter.Antialiasing)
+    qp.setPen(Qt.NoPen)
+
+    def sun(x, y, r):
+        qp.save()
+        qp.translate(x, y)
+        qp.rotate(t * 18)
+        for k in range(8):
+            qp.rotate(45)
+            ln = r * (0.42 + 0.08 * math.sin(t * 2.4 + k))
+            qp.setPen(QPen(QColor(sun_col), max(1.5, r * 0.13), Qt.SolidLine, Qt.RoundCap))
+            qp.drawLine(QPointF(r * 1.25, 0), QPointF(r * 1.25 + ln, 0))
+        qp.restore()
+        g = QRadialGradient(QPointF(x, y), r * 1.2)
+        g.setColorAt(0, QColor(adjust(sun_col, 0.12)))
+        g.setColorAt(1, QColor(sun_col))
+        qp.setPen(Qt.NoPen)
+        qp.setBrush(QBrush(g))
+        qp.drawEllipse(QPointF(x, y), r, r)
+
+    def moon(x, y, r):
+        disc = QPainterPath()
+        disc.addEllipse(QPointF(x, y), r, r)
+        cut = QPainterPath()
+        cut.addEllipse(QPointF(x + r * 0.55, y - r * 0.35), r * 0.9, r * 0.9)
+        qp.fillPath(disc.subtracted(cut), QColor(mix(fg, sun_col, 0.35)))
+        for k, (sx, sy) in enumerate(((-0.9, -0.6), (0.9, 0.5), (0.2, -1.05))):
+            a = 0.3 + 0.7 * (0.5 + 0.5 * math.sin(t * 2.2 + k * 2.1))
+            qp.setBrush(_alpha(fg, a))
+            qp.drawEllipse(QPointF(x + sx * r * 1.25, y + sy * r), r * 0.07, r * 0.07)
+
+    def cloud(x, y, size, col=None, alpha=1.0):
+        bob = math.sin(t * 1.3) * size * 0.03
+        drift = math.sin(t * 0.6) * size * 0.04
+        qp.fillPath(_cloud_path(x + drift, y + bob, size), _alpha(col or cloud_col, alpha))
+
+    if kind == "clear":
+        (moon if night else sun)(cx, cy, s * 0.22)
+    elif kind == "partly":
+        (moon if night else sun)(cx + s * 0.16, cy - s * 0.14, s * 0.17)
+        cloud(cx - s * 0.06, cy + s * 0.12, s * 0.62)
+    elif kind == "cloudy":
+        cloud(cx + s * 0.14, cy - s * 0.1, s * 0.48, mix(cloud_col, bg, 0.35))
+        cloud(cx - s * 0.04, cy + s * 0.08, s * 0.68)
+    elif kind == "fog":
+        cloud(cx, cy - s * 0.12, s * 0.6, alpha=0.85)
+        for k in range(3):
+            off = math.sin(t * 0.9 + k * 1.3) * s * 0.07
+            qp.setPen(QPen(_alpha(fg, 0.55), max(1.5, s * 0.04), Qt.SolidLine, Qt.RoundCap))
+            y = cy + s * (0.16 + k * 0.1)
+            qp.drawLine(QPointF(cx - s * 0.3 + off, y), QPointF(cx + s * 0.3 + off, y))
+    else:
+        top = cy - s * 0.12
+        span = s * 0.36
+        for k in range(5):
+            x = cx - s * 0.26 + k * s * 0.13
+            for j in range(2):
+                phase = (t * (0.9 if kind == "snow" else 1.6) + k * 0.37 + j * 0.5) % 1.0
+                y = top + s * 0.18 + phase * span
+                a = math.sin(phase * math.pi)
+                if kind == "snow" or (kind == "sleet" and k % 2):
+                    sway = math.sin(t * 2 + k) * s * 0.03
                     qp.setPen(Qt.NoPen)
-                    qp.setBrush(hl)
-                    qp.drawEllipse(r)
-                _draw_transport_icon(qp, key, r, fg)
+                    qp.setBrush(_alpha(fg, a))
+                    qp.drawEllipse(QPointF(x + sway, y), s * 0.03, s * 0.03)
+                else:
+                    qp.setPen(QPen(_alpha(wet, a), max(1.2, s * 0.03), Qt.SolidLine, Qt.RoundCap))
+                    qp.drawLine(QPointF(x, y), QPointF(x - s * 0.03, y + s * 0.08))
+        cloud(cx, top, s * 0.66, mix(cloud_col, bg, 0.2) if kind == "thunder" else None)
+        if kind == "thunder":
+            k = t % 3.4
+            flash = 1.0 if k < 0.12 or 0.25 < k < 0.33 else 0.0
+            if flash:
+                qp.fillPath(_cloud_path(cx, top, s * 0.66), _alpha("#ffffff", 0.25))
+            bolt_path = QPainterPath(QPointF(cx + s * 0.02, top + s * 0.14))
+            for dx, dy in ((-0.1, 0.2), (0.02, 0.2), (-0.06, 0.38), (0.12, 0.14), (0.0, 0.14), (0.08, 0.0)):
+                bolt_path.lineTo(cx + s * dx, top + s * dy)
+            bolt_path.closeSubpath()
+            qp.fillPath(bolt_path, _alpha(bolt, 0.35 + 0.65 * flash))
     qp.restore()
-    return full
+
+
+SAMPLE_WEATHER = {"temp": 64, "feels": 62, "unit": "F", "desc": "Partly cloudy", "code": 116, "humidity": 58,
+                  "wind": "7 mph", "area": "Your town", "night": False,
+                  "days": [{"name": "Today", "code": 116, "hi": 68, "lo": 51},
+                           {"name": "Mon", "code": 296, "hi": 61, "lo": 49},
+                           {"name": "Tue", "code": 113, "hi": 70, "lo": 50}]}
+
+
+def sample_weather(units="us"):
+    if units == "us":
+        return SAMPLE_WEATHER
+    c = lambda f: round((f - 32) * 5 / 9)  # noqa: E731
+    w = dict(SAMPLE_WEATHER, temp=c(64), feels=c(62), unit="C", wind="11 km/h")
+    w["days"] = [dict(d, hi=c(d["hi"]), lo=c(d["lo"])) for d in SAMPLE_WEATHER["days"]]
+    return w
+
+
+def _paint_weather(qp, lay, panel, p, state, t, anim):
+    fg, mu, ac = p["foreground"], p["muted"], p["accent"]
+    w = state.get("weather")
+    err = state.get("weather_error")
+    if not w:
+        draw_weather_icon(qp, lay["wicon"], "cloudy", t, p)
+        qp.setFont(_font(10))
+        qp.setPen(QColor(mu))
+        qp.drawText(lay["wtemp"].united(lay["wdesc"]), Qt.AlignLeft | Qt.AlignVCenter | Qt.TextWordWrap,
+                    f"Couldn't get the weather ({err})" if err else "Getting the weather…")
+        return
+    draw_weather_icon(qp, lay["wicon"], weather_kind(w["code"]), t, p, w.get("night", False))
+    qp.setFont(_font(25, True))
+    qp.setPen(QColor(fg))
+    fm = QFontMetricsF(qp.font())
+    temp = f"{w['temp']}°"
+    qp.drawText(lay["wtemp"], Qt.AlignLeft | Qt.AlignVCenter, temp)
+    qp.setFont(_font(10, True))
+    qp.setPen(QColor(mu))
+    qp.drawText(lay["wtemp"].adjusted(fm.horizontalAdvance(temp) + 2, 6, 0, 0), Qt.AlignLeft | Qt.AlignTop,
+                w["unit"])
+    qp.setFont(_font(10))
+    qp.setPen(QColor(ac))
+    fm = QFontMetricsF(qp.font())
+    qp.drawText(lay["wdesc"], Qt.AlignLeft | Qt.AlignVCenter, fm.elidedText(w["desc"], Qt.ElideRight,
+                                                                            lay["wdesc"].width()))
+    qp.setFont(_font(8.5))
+    qp.setPen(QColor(mu))
+    more = f"Feels {w['feels']}° · {w['humidity']}% · {w['wind']}"
+    fm = QFontMetricsF(qp.font())
+    qp.drawText(lay["wmore"], Qt.AlignLeft | Qt.AlignVCenter, fm.elidedText(more, Qt.ElideRight,
+                                                                            lay["wmore"].width()))
+    for k, (d, r) in enumerate(zip(w.get("days", []), lay.get("days", []))):
+        qp.setPen(Qt.NoPen)
+        qp.setBrush(_alpha(fg, 0.05))
+        qp.drawRoundedRect(r.adjusted(3, 0, -3, 0), 9, 9)
+        qp.setFont(_font(8.5, True))
+        qp.setPen(QColor(mu))
+        qp.drawText(QRectF(r.left(), r.top() + 4, r.width(), 16), Qt.AlignHCenter | Qt.AlignTop, d["name"])
+        draw_weather_icon(qp, QRectF(r.center().x() - 17, r.top() + 20, 34, 34), weather_kind(d["code"]),
+                          t * 0.8 + k, p)
+        qp.setFont(_font(9, True))
+        hi, lo = f"{d['hi']}°", f"  {d['lo']}°"
+        fmh = QFontMetricsF(qp.font())
+        x = r.center().x() - (fmh.horizontalAdvance(hi) + fmh.horizontalAdvance(lo)) / 2
+        qp.setPen(QColor(fg))
+        qp.drawText(QPointF(x, r.bottom() - 6), hi)
+        qp.setPen(QColor(mu))
+        qp.drawText(QPointF(x + fmh.horizontalAdvance(hi), r.bottom() - 6), lo)
 
 
 # ── album art / now playing data ───────────────────────────────────
@@ -1468,6 +2100,199 @@ def fetch_art(url):
         for stale in old[:-150]:
             stale.unlink(missing_ok=True)
     return f
+
+
+# ── system stats and weather for panels ────────────────────────────
+
+_helper_cache = {}
+
+
+def helper_funcs():
+    """The sensor functions from the widget helper script, loaded once into this process."""
+    if not _helper_cache:
+        exec(compile(HELPER_SRC.replace("print(main(sys.argv[1:]))", ""), "tf-helper", "exec"), _helper_cache)
+    return _helper_cache
+
+
+CPU_SENSORS = ("k10temp", "coretemp", "zenpower", "cpu_thermal", "acpitz")
+
+
+def _cpu_times():
+    with open("/proc/stat") as f:
+        v = [int(x) for x in f.readline().split()[1:]]
+    return v[3] + (v[4] if len(v) > 4 else 0), sum(v)
+
+
+def _net_bytes():
+    rx = tx = 0
+    with open("/proc/net/dev") as f:
+        for line in f.readlines()[2:]:
+            name, data = line.split(":", 1)
+            if name.strip() == "lo":
+                continue
+            fields = data.split()
+            rx += int(fields[0])
+            tx += int(fields[8])
+    return rx, tx
+
+
+def _gpu_reading():
+    """(usage %, temp °C) - one nvidia-smi call on NVIDIA, sysfs on AMD; None where unknown."""
+    if shutil.which("nvidia-smi"):
+        try:
+            out = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,temperature.gpu",
+                                  "--format=csv,noheader,nounits"], capture_output=True, text=True,
+                                 timeout=3).stdout.strip().splitlines()
+            u, tmp = (x.strip() for x in out[0].split(","))
+            return int(float(u)), float(tmp)
+        except Exception:
+            pass
+    h = helper_funcs()
+    return h["gpu_usage"](), h["gpu_temp"]()
+
+
+def collect_stats(prev=None, units="c"):
+    """One sample of everything the system panel can show: {metric: (fraction 0..1, label)}, plus state
+    to pass back in next time (CPU and network are measured between samples)."""
+    h = helper_funcs()
+    now = time.monotonic()
+    out = {}
+    idle, total = _cpu_times()
+    try:
+        rx, tx = _net_bytes()
+    except OSError:
+        rx = tx = 0
+    if prev:
+        dt = max(0.001, now - prev["t"])
+        d_total = total - prev["total"]
+        cpu = clamp(1 - (idle - prev["idle"]) / d_total) if d_total else 0.0
+        down, up = max(0, rx - prev["rx"]) / dt, max(0, tx - prev["tx"]) / dt
+    else:
+        cpu, down, up = 0.0, 0.0, 0.0
+    out["cpu"] = (cpu, f"{round(cpu * 100)}%")
+    mem = {}
+    with open("/proc/meminfo") as f:
+        for line in f:
+            k, v = line.split(":", 1)
+            mem[k] = int(v.split()[0])
+    used = mem.get("MemTotal", 1) - mem.get("MemAvailable", 0)
+    out["ram"] = (clamp(used / max(1, mem.get("MemTotal", 1))), f"{used / 1048576:.1f}G")
+    try:
+        du = shutil.disk_usage("/")
+        out["disk"] = (du.used / du.total, f"{round(du.used / du.total * 100)}%")
+    except OSError:
+        out["disk"] = (0.0, "n/a")
+    ct = h["hwmon_temp"](CPU_SENSORS)
+    out["cputemp"] = (clamp(ct / 100) if ct else 0.0, h["fmt_temp"](ct, units))
+    gu, gt = _gpu_reading()
+    out["gpu"] = (clamp(gu / 100) if gu is not None else 0.0, "n/a" if gu is None else f"{gu}%")
+    out["gputemp"] = (clamp(gt / 100) if gt else 0.0, h["fmt_temp"](gt, units))
+    out["net"] = (down, up)
+    return out, {"t": now, "idle": idle, "total": total, "rx": rx, "tx": tx}
+
+
+def fake_stats(t):
+    """Animated sample values for previews."""
+    def wave(a, b, c):
+        return clamp(a + b * math.sin(t * c))
+    cpu, gpu = wave(0.34, 0.22, 0.9), wave(0.45, 0.3, 0.6)
+    return {"cpu": (cpu, f"{round(cpu * 100)}%"), "ram": (0.41, "12.8G"), "gpu": (gpu, f"{round(gpu * 100)}%"),
+            "cputemp": (0.52, "52°C"), "gputemp": (0.61, "61°C"), "disk": (0.70, "70%"),
+            "net": (1.4e6 + 9e5 * math.sin(t), 86e3)}
+
+
+WEATHER_CACHE = CFG_DIR / "weather.json"
+
+
+def _clock_minutes(s):
+    m = re.match(r"(\d+):(\d+)\s*([AP]M)?", s or "", re.I)
+    if not m:
+        return None
+    hh, mm, ap = int(m.group(1)), int(m.group(2)), (m.group(3) or "").upper()
+    if ap == "PM" and hh != 12:
+        hh += 12
+    if ap == "AM" and hh == 12:
+        hh = 0
+    return hh * 60 + mm
+
+
+def parse_weather(data, units="us"):
+    """wttr.in ?format=j1 JSON → the small dict the weather panel draws."""
+    us = units == "us"
+    T = "F" if us else "C"
+    cur = data["current_condition"][0]
+    w = {"temp": int(cur[f"temp_{T}"]), "feels": int(cur[f"FeelsLike{T}"]), "unit": T,
+         "desc": cur["weatherDesc"][0]["value"].strip(), "code": int(cur["weatherCode"]),
+         "humidity": int(cur["humidity"]),
+         "wind": f"{cur['windspeedMiles']} mph" if us else f"{cur['windspeedKmph']} km/h",
+         "area": "", "night": False, "days": [], "fetched": time.time()}
+    try:
+        w["area"] = data["nearest_area"][0]["areaName"][0]["value"]
+    except (KeyError, IndexError):
+        pass
+    days = data.get("weather", [])
+    try:
+        astro = days[0]["astronomy"][0]
+        rise, set_ = _clock_minutes(astro["sunrise"]), _clock_minutes(astro["sunset"])
+        lt = time.localtime()
+        nowm = lt.tm_hour * 60 + lt.tm_min
+        if rise is not None and set_ is not None:
+            w["night"] = not (rise <= nowm < set_)
+    except (KeyError, IndexError):
+        pass
+    for i, d in enumerate(days[:3]):
+        hourly = d.get("hourly") or [{}]
+        code = int(hourly[min(4, len(hourly) - 1)].get("weatherCode", 116))
+        try:
+            name = "Today" if i == 0 else time.strftime("%a", time.strptime(d["date"], "%Y-%m-%d"))
+        except (KeyError, ValueError):
+            name = ""
+        w["days"].append({"name": name, "code": code, "hi": int(d[f"maxtemp{T}"]), "lo": int(d[f"mintemp{T}"])})
+    return w
+
+
+def weather_url(location, fmt=True):
+    loc = re.sub(r"[^\w,.+~-]", "", (location or "").strip().replace(" ", "+"))
+    return f"https://wttr.in/{loc}" + ("?format=j1" if fmt else "")
+
+
+def fetch_weather(location, units):
+    w = parse_weather(json.loads(_http_get(weather_url(location), timeout=15)), units)
+    try:
+        cache = json.loads(WEATHER_CACHE.read_text()) if WEATHER_CACHE.exists() else {}
+        cache[f"{location}|{units}"] = w
+        WEATHER_CACHE.write_text(json.dumps(cache))
+    except Exception:
+        pass
+    return w
+
+
+def cached_weather(location, units):
+    try:
+        return json.loads(WEATHER_CACHE.read_text()).get(f"{location}|{units}")
+    except Exception:
+        return None
+
+
+def lerp_palette(a, b, k):
+    """Palette part-way from a to b (0..1), for smooth color transitions."""
+    if k >= 1:
+        return b
+    out = dict(b)
+    for key, _ in ROLES:
+        out[key] = mix(a[key], b[key], k)
+    out["ansi"] = [mix(x, y, k) for x, y in zip(a["ansi"], b["ansi"])]
+    ga, gb = a["gradient"], b["gradient"]
+    n = max(len(ga), len(gb))
+
+    def sample(g, i):
+        if len(g) == 1 or n == 1:
+            return g[0]
+        pos = i * (len(g) - 1) / (n - 1)
+        j = int(pos)
+        return g[j] if j + 1 >= len(g) else mix(g[j], g[j + 1], pos - j)
+    out["gradient"] = [mix(sample(ga, i), sample(gb, i), k) for i in range(n)]
+    return out
 
 
 class AudioFeed(QObject):
@@ -1520,13 +2345,13 @@ class AudioFeed(QObject):
 
 VIS_STYLES = [("bars", "Bars"), ("mirror", "Mirrored bars"), ("blocks", "LED blocks"),
               ("wave", "Wave"), ("mirrorwave", "Mirrored wave"), ("radial", "Radial ring"),
-              ("frame", "Frame (around a panel)")]
+              ("orb", "Orb (round wave)"), ("frame", "Frame (around a panel)")]
 VIS_COLORS = [("gradient", "Palette gradient"), ("accent", "Accent"), ("accent2", "Second accent"),
               ("foreground", "Text"), ("red", "Red"), ("green", "Green"), ("yellow", "Yellow"),
               ("blue", "Blue"), ("magenta", "Magenta"), ("cyan", "Cyan")]
 VIS_TEMPLATES = [("bottom", "Bars along the bottom"), ("center", "Mirrored bars, centered"),
                  ("radial", "Radial ring"), ("wave", "Wave"), ("mirrorwave", "Mirrored wave"),
-                 ("led", "LED meter"), ("frame", "Frame around a panel")]
+                 ("led", "LED meter"), ("orb", "Spinning orb"), ("frame", "Frame around a panel")]
 
 
 def vis_template(kind="bottom"):
@@ -1534,18 +2359,20 @@ def vis_template(kind="bottom"):
          "rounded": True, "stereo": False, "flip": False, "color": "gradient", "opacity": 90,
          "smoothing": 77, "framerate": 60, "alignment": "bottom_middle", "gap_x": 0, "gap_y": 0,
          "width": 0, "height": 160, "screen": "", "x11": True, "autostart": False,
-         "glow": False, "wrap": "", "depth": 36}
+         "glow": False, "wrap": "", "depth": 36, "peaks": False, "spin": 0}
     presets = {
-        "bottom": dict(name="Bottom bars", bars=96, gap=30, height=150, opacity=85),
+        "bottom": dict(name="Bottom bars", bars=96, gap=30, height=150, opacity=85, peaks=True),
         "center": dict(name="Center bars", style="mirror", bars=72, width=1100, height=260,
                        alignment="middle_middle", stereo=True),
         "radial": dict(name="Radial ring", style="radial", bars=96, gap=35, width=440, height=440,
-                       alignment="middle_right", gap_x=120, stereo=True, glow=True),
+                       alignment="middle_right", gap_x=120, stereo=True, glow=True, spin=10),
         "wave": dict(name="Wave", style="wave", bars=48, height=200, opacity=80),
         "mirrorwave": dict(name="Mirrored wave", style="mirrorwave", bars=48, width=1000, height=180,
                            alignment="top_middle", gap_y=80, stereo=True),
         "led": dict(name="LED meter", style="blocks", bars=24, gap=28, width=480, height=170,
-                    alignment="bottom_left", gap_x=40, gap_y=60, rounded=False),
+                    alignment="bottom_left", gap_x=40, gap_y=60, rounded=False, peaks=True),
+        "orb": dict(name="Spinning orb", style="orb", bars=64, width=420, height=420, alignment="middle_right",
+                    gap_x=140, stereo=True, glow=True, spin=14, opacity=85),
         "frame": dict(name="Panel frame", style="frame", bars=120, gap=40, depth=30, stereo=True, glow=True,
                       width=480, height=300, alignment="middle_middle"),
     }
@@ -1656,7 +2483,20 @@ def _perimeter_point(inner, s):
     return QPointF(inner.left(), inner.bottom() - (s - 2 * W - H)), 180
 
 
-def _draw_vis(qp, rect, vals, v, cols, grow=0.0):
+def _closed_spline(pts):
+    """Smooth closed curve through pts (Catmull-Rom as cubic Béziers)."""
+    n = len(pts)
+    path = QPainterPath(pts[0])
+    for i in range(n):
+        p0, p1, p2, p3 = pts[i - 1], pts[i], pts[(i + 1) % n], pts[(i + 2) % n]
+        c1 = QPointF(p1.x() + (p2.x() - p0.x()) / 6, p1.y() + (p2.y() - p0.y()) / 6)
+        c2 = QPointF(p2.x() - (p3.x() - p1.x()) / 6, p2.y() - (p3.y() - p1.y()) / 6)
+        path.cubicTo(c1, c2, p2)
+    path.closeSubpath()
+    return path
+
+
+def _draw_vis(qp, rect, vals, v, cols, grow=0.0, peaks=None, t=0.0):
     n = len(vals)
     style, flip = v["style"], v["flip"]
     if v.get("wrap"):
@@ -1692,13 +2532,46 @@ def _draw_vis(qp, rect, vals, v, cols, grow=0.0):
             qp.setOpacity(op)
             qp.setPen(Qt.NoPen)
         qp.setBrush(QBrush(grad))
-        t = max(1.0, 2 * math.pi * r0 / n * (1 - v["gap"] / 100))
+        th = max(1.0, 2 * math.pi * r0 / n * (1 - v["gap"] / 100))
+        rot = t * v.get("spin", 0)
         for i, val in enumerate(vals):
             qp.save()
-            qp.rotate(-90 + 360 * i / n)
-            box(QRectF(r0, -t / 2, max(1.5, val * lmax), t), t / 2 if v["rounded"] else 0)
+            qp.rotate(-90 + 360 * i / n + rot)
+            box(QRectF(r0, -th / 2, max(1.5, val * lmax), th), th / 2 if v["rounded"] else 0)
+            if peaks and not grow and i < len(peaks):
+                qp.setBrush(QColor(mix(cols[-1], "#ffffff", 0.25)))
+                qp.drawEllipse(QPointF(r0 + peaks[i][0] * lmax + 4, 0), 1.8, 1.8)
+                qp.setBrush(QBrush(grad))
             qp.restore()
         qp.restore()
+        return
+
+    if style == "orb":
+        cx, cy = rect.center().x(), rect.center().y()
+        R = min(W, H) / 2
+        r0 = R * 0.45
+        lmax = R - r0 - 4
+        rot = math.radians(t * v.get("spin", 0))
+        pts = []
+        for i, val in enumerate(vals):
+            a = -math.pi / 2 + 2 * math.pi * i / n + rot
+            r = r0 + val * lmax + grow
+            pts.append(QPointF(cx + r * math.cos(a), cy + r * math.sin(a)))
+        shape = _closed_spline(pts)
+        grad = QRadialGradient(QPointF(cx, cy), R)
+        _stops(grad, cols, start=0.35)
+        if not grow:
+            qp.setOpacity(op * 0.5)
+            qp.setBrush(QBrush(grad))
+            qp.drawPath(shape)
+            qp.setOpacity(op * 0.35)
+            qp.setBrush(Qt.NoBrush)
+            qp.setPen(QPen(QColor(cols[0]), 1.2))
+            qp.drawEllipse(QPointF(cx, cy), r0 * 0.92, r0 * 0.92)
+            qp.setOpacity(op)
+        qp.setBrush(Qt.NoBrush)
+        qp.setPen(QPen(QBrush(grad), 2.2 + grow * 2))
+        qp.drawPath(shape)
         return
 
     if style == "frame":
@@ -1709,16 +2582,17 @@ def _draw_vis(qp, rect, vals, v, cols, grow=0.0):
             d = min(W, H) * 0.18
         per = 2 * (inner.width() + inner.height())
         step = per / n
-        t = max(1.0, step * (1 - v["gap"] / 100))
+        th = max(1.0, step * (1 - v["gap"] / 100))
+        offset = t * v.get("spin", 0) / 360 * per
         grad = QLinearGradient(QPointF(0, 0), QPointF(d, 0))
         _stops(grad, cols)
         qp.setBrush(QBrush(grad))
         for i, val in enumerate(vals):
-            pt, ang = _perimeter_point(inner, (i + 0.5) * step)
+            pt, ang = _perimeter_point(inner, (i + 0.5) * step + offset)
             qp.save()
             qp.translate(pt)
             qp.rotate(ang)
-            box(QRectF(2, -t / 2, max(1.5, val * d), t), t / 2 if v["rounded"] else 0)
+            box(QRectF(2, -th / 2, max(1.5, val * d), th), th / 2 if v["rounded"] else 0)
             qp.restore()
         return
 
@@ -1734,17 +2608,30 @@ def _draw_vis(qp, rect, vals, v, cols, grow=0.0):
     def bar_x(i):
         return L + i * slot + (slot - bw) / 2
 
+    cap = QColor(mix(cols[-1], "#ffffff", 0.25))
+    caps = peaks if (peaks and not grow and len(peaks) == n) else None
     if style == "bars":
         for i, val in enumerate(vals):
             h = val * H
             if h >= 0.5:
                 box(QRectF(bar_x(i), T if flip else T + H - h, bw, h),
                     min(bw / 2, h / 2) if v["rounded"] else 0)
+        if caps:
+            qp.setBrush(cap)
+            for i, (pk, _) in enumerate(caps):
+                y = T + pk * H + 2 if flip else T + H - pk * H - 4.5
+                qp.drawRoundedRect(QRectF(bar_x(i), y, bw, 2.5), 1, 1)
     elif style == "mirror":
         for i, val in enumerate(vals):
             h = val * H / 2
             if h >= 0.25:
                 box(QRectF(bar_x(i), cy - h, bw, 2 * h), min(bw / 2, h) if v["rounded"] else 0)
+        if caps:
+            qp.setBrush(cap)
+            for i, (pk, _) in enumerate(caps):
+                h = pk * H / 2
+                qp.drawRoundedRect(QRectF(bar_x(i), cy - h - 4.5, bw, 2.5), 1, 1)
+                qp.drawRoundedRect(QRectF(bar_x(i), cy + h + 2, bw, 2.5), 1, 1)
     elif style == "blocks":
         seg = max(3.0, min(bw * 0.55, H / 10))
         step = seg + max(1.5, seg * 0.45)
@@ -1753,6 +2640,12 @@ def _draw_vis(qp, rect, vals, v, cols, grow=0.0):
             for k in range(int(round(val * total))):
                 y = T + k * step if flip else T + H - k * step - seg
                 box(QRectF(bar_x(i), y, bw, seg), min(bw, seg) / 2 if v["rounded"] else 1.0)
+        if caps:
+            qp.setBrush(cap)
+            for i, (pk, _) in enumerate(caps):
+                k = min(total - 1, int(round(pk * total)))
+                y = T + k * step if flip else T + H - k * step - seg
+                qp.drawRoundedRect(QRectF(bar_x(i), y, bw, seg), 1, 1)
     elif style == "wave":
         edge = T if flip else T + H
         pts = [QPointF(L + (i + 0.5) * slot, T + val * H if flip else T + H - val * H)
@@ -1785,27 +2678,28 @@ def _draw_vis(qp, rect, vals, v, cols, grow=0.0):
         qp.drawPath(shape)
 
 
-def paint_visualizer(qp, rect, vals, v, p):
+def paint_visualizer(qp, rect, vals, v, p, peaks=None, t=0.0):
     n = len(vals)
     if not n or rect.width() < 4 or rect.height() < 4:
         return
     cols = list(p["gradient"]) if v["color"] == "gradient" else [role_color(p, v["color"])]
-    base_op = clamp(v["opacity"] / 100)
+    base_op = clamp(v["opacity"] / 100) * qp.opacity()
     qp.save()
     qp.setRenderHint(QPainter.Antialiasing)
     if v.get("glow"):
         bass = bass_level(vals, v["stereo"])
         for grow, strength in ((7, 0.10), (4, 0.16), (2, 0.22)):
             qp.setOpacity(base_op * strength * (0.3 + 1.2 * bass))
-            _draw_vis(qp, rect, vals, v, cols, grow)
+            _draw_vis(qp, rect, vals, v, cols, grow, None, t)
     qp.setOpacity(base_op)
-    _draw_vis(qp, rect, vals, v, cols, 0)
+    _draw_vis(qp, rect, vals, v, cols, 0, peaks, t)
     qp.restore()
 
 
 class DesktopWindow(QWidget):
-    """Base for ThemeForge's own desktop windows: frameless, kept below other windows,
-    reloads itself when the settings or the live palette change."""
+    """Base for ThemeForge's own desktop windows: frameless, kept below other windows, reloads itself when
+    the settings or the live palette change, fades in, and blends smoothly into new colors."""
+    FRAME_MS = 33          # ~30 fps for ambient animation; cheap for small windows
 
     def __init__(self, item_id, click_through):
         super().__init__()
@@ -1818,10 +2712,17 @@ class DesktopWindow(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.stamp = None
         self.settings = None
-        self.pal = None
+        self.pal = None            # palette we're heading to
+        self.pal_from = None       # palette we're blending from (None = not blending)
+        self.pal_t0 = 0.0
+        self.born = time.monotonic()
         self.poll = QTimer(self)
         self.poll.setInterval(500)
         self.poll.timeout.connect(self.check_reload)
+        self.anim = QTimer(self)
+        self.anim.setInterval(self.FRAME_MS)
+        self.anim.timeout.connect(self.on_anim)
+        self.last_frame = time.monotonic()
 
     def check_reload(self):
         stamp = (_mtime(SETTINGS_FILE), _mtime(LIVE_PALETTE_FILE))
@@ -1829,12 +2730,49 @@ class DesktopWindow(QWidget):
             return True
         self.stamp = stamp
         self.settings = load_settings()
-        self.pal = read_live_palette(self.settings["palette"])
+        target = read_live_palette(self.settings["palette"])
+        if self.pal is None:
+            self.pal = target
+        elif target != self.pal:
+            self.pal_from = self.shown_palette()
+            self.pal = target
+            self.pal_t0 = time.monotonic()
+            self.kick()
         if not self.reload():
             QApplication.quit()
             return False
         self.update()
         return True
+
+    def shown_palette(self):
+        if self.pal_from is None:
+            return self.pal
+        k = (time.monotonic() - self.pal_t0) / 0.9
+        if k >= 1:
+            self.pal_from = None
+            return self.pal
+        return lerp_palette(self.pal_from, self.pal, ease_out(k))
+
+    def appear(self):
+        return clamp((time.monotonic() - self.born) / 0.45)
+
+    def kick(self):
+        if not self.anim.isActive():
+            self.last_frame = time.monotonic()
+            self.anim.start()
+
+    def on_anim(self):
+        now = time.monotonic()
+        dt = min(0.1, now - self.last_frame)
+        self.last_frame = now
+        busy = self.step(dt)
+        self.update()
+        if not (busy or self.pal_from is not None or self.appear() < 1):
+            self.anim.stop()
+
+    def step(self, dt):
+        """Advance animations by dt seconds; return True while something is still moving."""
+        return False
 
     def reload(self):
         return True
@@ -1850,6 +2788,8 @@ class VisualizerWindow(DesktopWindow):
         super().__init__(vid, click_through=True)
         self.setWindowTitle(f"themeforge-vis-{vid}")
         self.vals = []
+        self.peaks = []
+        self.last_audio = time.monotonic()
         self.v = None
         self.feed = AudioFeed(vid, self)
         self.feed.frame.connect(self.on_frame)
@@ -1870,37 +2810,64 @@ class VisualizerWindow(DesktopWindow):
         return True
 
     def on_frame(self, vals):
+        now = time.monotonic()
+        dt = min(0.2, now - self.last_audio)
+        self.last_audio = now
         self.vals = vals
+        self.peaks = update_peaks(self.peaks, vals, dt)
         self.update()
 
     def paintEvent(self, e):
         if not self.v or not self.vals:
             return
         qp = QPainter(self)
-        paint_visualizer(qp, QRectF(self.rect()), self.vals, self.v, self.pal)
+        qp.setOpacity(ease_out(self.appear()))
+        paint_visualizer(qp, QRectF(self.rect()), self.vals, self.v, self.shown_palette(),
+                         self.peaks if self.v.get("peaks") else None, time.monotonic() - self.born)
         qp.end()
 
     def shutdown(self):
         self.feed.stop()
 
 
+def update_peaks(peaks, vals, dt, hold=0.35, fall=0.9):
+    """Falling peak caps: [(value, seconds held)] per bar."""
+    if len(peaks) != len(vals):
+        peaks = [(v, 0.0) for v in vals]
+    out = []
+    for (pk, held), v in zip(peaks, vals):
+        if v >= pk:
+            out.append((v, 0.0))
+        elif held < hold:
+            out.append((pk, held + dt))
+        else:
+            out.append((max(v, pk - fall * dt), held + dt))
+    return out
+
+
 class PanelWindow(DesktopWindow):
-    """Clickable desktop panel: a games launcher or a now playing card."""
+    """Clickable desktop panel: games launcher, now playing card, clock, system gauges or weather."""
     art_ready = Signal(str, object)
+    stats_ready = Signal(object)
+    weather_ready = Signal(object, object)
 
     def __init__(self, pid):
         super().__init__(pid, click_through=False)
         self.setWindowTitle(f"themeforge-panel-{pid}")
         self.setMouseTracking(True)
         self.panel = None
-        self.items = []
-        self.icons = {}
+        self.items, self.icons = [], {}
         self.hover = None
-        self.np = None
-        self.np_at = 0.0
-        self.art_url = None
-        self.art = None
+        self.hover_amt, self.press, self.ripples = {}, {}, []
+        self.np, self.np_at = None, 0.0
+        self.art_url, self.art, self.art_prev, self.art_mix = None, None, None, 1.0
+        self.title_key, self.title_since = None, 0.0
+        self.vinyl = 0.0
         self.glow = 0.0
+        self.stats, self.shown, self.stats_prev = {}, {}, None
+        self.stats_stop = threading.Event()
+        self.stats_thread = None
+        self.weather, self.weather_error, self.weather_key = None, None, None
         self.watcher = QFileSystemWatcher(self)
         self.watcher.directoryChanged.connect(lambda *_: self.load_items())
         self.feed = AudioFeed(f"panel-{pid}", self)
@@ -1910,13 +2877,18 @@ class PanelWindow(DesktopWindow):
         self.np_timer = QTimer(self)
         self.np_timer.setInterval(1000)
         self.np_timer.timeout.connect(self.poll_np)
-        self.tick = QTimer(self)
-        self.tick.setInterval(250)
-        self.tick.timeout.connect(self.update)
+        self.slow = QTimer(self)                 # once-a-second repaint when animations are off
+        self.slow.setInterval(1000)
+        self.slow.timeout.connect(self.update)
+        self.weather_timer = QTimer(self)
+        self.weather_timer.timeout.connect(self.fetch_weather)
         self.art_ready.connect(self.on_art)
+        self.stats_ready.connect(self.on_stats)
+        self.weather_ready.connect(self.on_weather)
         if not self.check_reload():
             raise SystemExit(f"No panel with id {pid}")
         self.poll.start()
+        self.kick()
 
     # ── settings
     def reload(self):
@@ -1926,24 +2898,36 @@ class PanelWindow(DesktopWindow):
             return False
         old = self.panel
         self.panel = panel
-        if panel["kind"] == "launcher":
-            if not old or old["folder"] != panel["folder"]:
-                self.load_items()
-            self.np_timer.stop()
-            self.tick.stop()
+        kind = panel["kind"]
+        if kind == "launcher" and (not old or old["folder"] != panel["folder"]):
+            self.load_items()
+        if kind == "nowplaying" and not self.np_timer.isActive():
+            self.np_timer.start()
+            self.poll_np()
+        if kind == "system" and self.stats_thread is None:
+            self.stats_thread = threading.Thread(target=self.stats_loop, daemon=True)
+            self.stats_thread.start()
+        if kind == "weather":
+            key = (panel["location"], panel["weather_units"])
+            self.weather_timer.setInterval(max(5, panel["refresh"]) * 60_000)
+            if key != self.weather_key:
+                self.weather_key = key
+                self.weather = cached_weather(*key)
+                self.weather_error = None
+                self.fetch_weather()
+                self.weather_timer.start()
+        if kind in ("clock", "nowplaying", "weather") and not panel["animations"]:
+            self.slow.start()
         else:
-            self.items = []
-            if not self.np_timer.isActive():
-                self.np_timer.start()
-                self.poll_np()
-                self.tick.start()
-        if panel["glow"]:
+            self.slow.stop()
+        if panel["glow"] or (kind == "nowplaying" and panel["animations"]):
             self.feed.configure(12, 30, 70, False)
         else:
             self.feed.stop()
             self.feed.conf = None
             self.glow = 0.0
         self.place()
+        self.kick()
         return True
 
     def place(self):
@@ -1951,6 +2935,61 @@ class PanelWindow(DesktopWindow):
         r = panel_rect(self.panel, QRectF(scr.availableGeometry()), len(self.items))
         m = GLOW_MARGIN
         self.setGeometry(r.adjusted(-m, -m, m, m).toRect())
+
+    # ── animation
+    def continuous(self):
+        p = self.panel
+        if not p or not p["animations"]:
+            return False
+        if p["shimmer"] or p["kind"] in ("clock", "weather"):
+            return True
+        if p["kind"] == "nowplaying":
+            return bool(self.np and self.np["status"] == "Playing")
+        return False
+
+    def step(self, dt):
+        p = self.panel
+        if not p:
+            return False
+        busy = self.continuous()
+        k = min(1.0, dt * 12)
+        for i in list(self.hover_amt):                        # hover in/out
+            target = 1.0 if self.hover == ("item", i) else 0.0
+            self.hover_amt[i] += (target - self.hover_amt[i]) * k
+            if abs(self.hover_amt[i] - target) < 0.01:
+                self.hover_amt[i] = target
+                if target == 0.0:
+                    del self.hover_amt[i]
+            else:
+                busy = True
+        for i in list(self.press):                            # click bounce
+            self.press[i] = max(0.0, self.press[i] - dt * 3.5)
+            if self.press[i] == 0.0:
+                del self.press[i]
+            busy = True
+        self.ripples = [(x, y, age + dt) for x, y, age in self.ripples if age + dt < 0.55]
+        busy = busy or bool(self.ripples)
+        if self.art_mix < 1:                                  # album art crossfade
+            self.art_mix = min(1.0, self.art_mix + dt / 0.6)
+            busy = True
+        if self.np and self.np["status"] == "Playing":       # record spin (~22 rpm looks calm)
+            self.vinyl = (self.vinyl + dt * 130) % 360
+        for m, (target, _) in self.stats.items():             # gauges glide to new values
+            if m == "net":
+                continue
+            cur = self.shown.get(m, 0.0)
+            nxt = cur + (target - cur) * min(1.0, dt * 4)
+            self.shown[m] = target if abs(nxt - target) < 0.002 else nxt
+            busy = busy or self.shown[m] != target
+        return busy
+
+    def state(self):
+        return {"t": time.monotonic() - self.born, "appear": self.appear(), "items": self.items,
+                "icons": self.icons, "hover": self.hover, "hover_amt": self.hover_amt, "press": self.press,
+                "ripples": self.ripples, "np": self.live_np(), "art": self.art, "art_prev": self.art_prev,
+                "art_mix": self.art_mix, "vinyl": self.vinyl, "title_since": self.title_since - self.born,
+                "glow": self.glow, "now": time.time(), "stats": self.stats, "shown": self.shown,
+                "weather": self.weather, "weather_error": self.weather_error}
 
     # ── launcher
     def load_items(self):
@@ -1972,12 +3011,15 @@ class PanelWindow(DesktopWindow):
 
     def on_np(self, *_):
         out = bytes(self.np_proc.readAllStandardOutput()).decode(errors="ignore")
+        was_playing = bool(self.np and self.np["status"] == "Playing")
         self.np = parse_np(out)
         self.np_at = time.monotonic()
+        key = ((self.np or {}).get("title"), (self.np or {}).get("artist"))
+        if key != self.title_key:
+            self.title_key, self.title_since = key, time.monotonic()
         url = (self.np or {}).get("art") or ""
         if url != self.art_url:
             self.art_url = url
-            self.art = None
             if url:
                 def work(u=url):
                     try:
@@ -1986,12 +3028,18 @@ class PanelWindow(DesktopWindow):
                         path = None
                     self.art_ready.emit(u, str(path) if path else "")
                 threading.Thread(target=work, daemon=True).start()
+            else:
+                self.art_prev, self.art, self.art_mix = self.art, None, 0.0
+        if self.np and self.np["status"] == "Playing" and not was_playing:
+            self.kick()
         self.update()
 
     def on_art(self, url, path):
         if url == self.art_url:
+            self.art_prev = self.art
             self.art = QPixmap(path) if path else None
-            self.update()
+            self.art_mix = 0.0 if self.panel["animations"] else 1.0
+            self.kick()
 
     def live_np(self):
         if not self.np:
@@ -2003,10 +3051,48 @@ class PanelWindow(DesktopWindow):
                 np["position"] = min(np["position"], np["length"])
         return np
 
-    # ── audio glow
+    # ── audio (glow and the play-button pulse)
     def on_frame(self, vals):
         target = clamp(bass_level(vals) * 1.4)
         self.glow = self.glow * 0.6 + target * 0.4
+        if self.panel and self.panel["glow"] and not self.anim.isActive():
+            self.update()
+
+    # ── system
+    def stats_loop(self):
+        prev = None
+        while not self.stats_stop.is_set():
+            try:
+                units = self.panel["units"] if self.panel else "c"
+                data, prev = collect_stats(prev, units)
+                self.stats_ready.emit(data)
+            except Exception as e:
+                print(f"system panel: {e}", file=sys.stderr)
+            self.stats_stop.wait(1.5)
+
+    def on_stats(self, data):
+        self.stats = data
+        if not self.panel["animations"]:
+            self.shown = {m: v[0] for m, v in data.items() if m != "net"}
+        self.kick()
+
+    # ── weather
+    def fetch_weather(self):
+        loc, units = self.weather_key or ("", "us")
+
+        def work():
+            try:
+                self.weather_ready.emit(fetch_weather(loc, units), None)
+            except Exception as e:
+                self.weather_ready.emit(None, str(e))
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_weather(self, w, err):
+        if w:
+            self.weather, self.weather_error = w, None
+            self.place()
+        else:
+            self.weather_error = err
         self.update()
 
     # ── drawing / input
@@ -2014,9 +3100,7 @@ class PanelWindow(DesktopWindow):
         if not self.panel:
             return
         qp = QPainter(self)
-        paint_panel(qp, QPointF(GLOW_MARGIN, GLOW_MARGIN), self.panel, self.pal,
-                    {"items": self.items, "icons": self.icons, "hover": self.hover, "np": self.live_np(),
-                     "art": self.art, "glow": self.glow})
+        paint_panel(qp, QPointF(GLOW_MARGIN, GLOW_MARGIN), self.panel, self.shown_palette(), self.state())
         qp.end()
 
     def hit(self, pos):
@@ -2029,12 +3113,17 @@ class PanelWindow(DesktopWindow):
             self.setCursor(Qt.PointingHandCursor if h else Qt.ArrowCursor)
             if h and h[0] == "item":
                 self.setToolTip(self.items[h[1]]["name"])
+                self.hover_amt.setdefault(h[1], 0.0)
+            elif h and h[0] == "forecast":
+                self.setToolTip("Open the full forecast")
             else:
                 self.setToolTip("")
+            self.kick()
             self.update()
 
     def leaveEvent(self, e):
         self.hover = None
+        self.kick()
         self.update()
 
     def mousePressEvent(self, e):
@@ -2048,6 +3137,10 @@ class PanelWindow(DesktopWindow):
             return
         kind, arg = h
         if kind == "item":
+            self.press[arg] = 1.0
+            pos = e.position()
+            self.ripples.append((pos.x() - GLOW_MARGIN, pos.y() - GLOW_MARGIN, 0.0))
+            self.kick()
             launch_item(self.items[arg])
         elif kind in ("prev", "play", "next"):
             QProcess.startDetached("playerctl", [{"prev": "previous", "play": "play-pause", "next": "next"}[kind]])
@@ -2055,6 +3148,8 @@ class PanelWindow(DesktopWindow):
         elif kind == "seek" and self.np and self.np.get("length"):
             QProcess.startDetached("playerctl", ["position", f"{arg * self.np['length']:.1f}"])
             QTimer.singleShot(250, self.poll_np)
+        elif kind == "forecast":
+            QDesktopServices.openUrl(QUrl(weather_url(self.panel["location"], fmt=False)))
 
     def context_menu(self, pos):
         m = QMenu(self)
@@ -2064,6 +3159,8 @@ class PanelWindow(DesktopWindow):
                 lambda: (folder.mkdir(parents=True, exist_ok=True),
                          QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))))
             m.addAction("Refresh").triggered.connect(self.load_items)
+        if self.panel["kind"] == "weather":
+            m.addAction("Refresh weather").triggered.connect(self.fetch_weather)
         m.addAction("Edit in ThemeForge").triggered.connect(
             lambda: subprocess.Popen([sys.executable, str(SCRIPT)], start_new_session=True))
         m.addSeparator()
@@ -2071,6 +3168,7 @@ class PanelWindow(DesktopWindow):
         m.exec(pos)
 
     def shutdown(self):
+        self.stats_stop.set()
         self.feed.stop()
 
 
@@ -4634,6 +5732,7 @@ class VisualizerPreview(QWidget):
         self.wall = None
         self.wall_path = None
         self.panels = []
+        self.peaks = []
         self.t = 0.0
         self.setMinimumSize(380, 260)
         self.timer = QTimer(self)
@@ -4658,6 +5757,9 @@ class VisualizerPreview(QWidget):
 
     def tick(self):
         self.t += 0.033
+        if self.v:
+            self.peaks = update_peaks(self.peaks, fake_spectrum(vis_bar_count(self.v), self.t, self.v["stereo"]),
+                                      0.033)
         self.update()
 
     def screen_geom(self):
@@ -4714,15 +5816,16 @@ class VisualizerPreview(QWidget):
             qp.setPen(QPen(QColor(mix(p["foreground"], p["background"], 0.4)), 1, Qt.DotLine))
             qp.drawRect(vr)
         n = vis_bar_count(self.v)
-        if wrapped is not None or self.v["style"] == "frame":
+        if wrapped is not None or self.v["style"] in ("frame", "orb"):
             qp.save()
             qp.translate(vr.left(), vr.top())
             qp.scale(k, k)
             paint_visualizer(qp, QRectF(0, 0, g.width(), g.height()), fake_spectrum(n, self.t, self.v["stereo"]),
-                             self.v, p)
+                             self.v, p, self.peaks if self.v.get("peaks") else None, self.t)
             qp.restore()
         else:
-            paint_visualizer(qp, vr, fake_spectrum(n, self.t, self.v["stereo"]), self.v, p)
+            paint_visualizer(qp, vr, fake_spectrum(n, self.t, self.v["stereo"]), self.v, p,
+                             self.peaks if self.v.get("peaks") else None, self.t)
         qp.end()
 
 
@@ -4738,6 +5841,8 @@ class VisualizersTab(QWidget):
             ("stereo", "bool", "Stereo - bass in the middle", None),
             ("flip", "bool", "Hang from the top", None),
             ("glow", "bool", "Glow with the bass", None),
+            ("peaks", "bool", "Falling peak caps", None),
+            ("spin", "int", "Spin (ring, orb, frame)", (0, 360, " °/s")),
             ("opacity", "int", "Opacity", (5, 100, " %")),
             ("smoothing", "int", "Smoothing", (0, 100, " %")),
             ("framerate", "int", "Frame rate", (10, 144, " fps")),
@@ -5089,7 +6194,8 @@ class PanelPreview(QWidget):
 
     def tick(self):
         self.t += 0.04
-        if self.panel and (self.panel["glow"] or self.panel["kind"] == "nowplaying"):
+        if self.panel and (self.panel["glow"] or self.panel["shimmer"]
+                           or self.panel["kind"] in ("nowplaying", "clock", "system", "weather")):
             self.update()
 
     def paintEvent(self, e):
@@ -5120,11 +6226,15 @@ class PanelPreview(QWidget):
         area = QRectF(m, m, (r.width() - 2 * m) / scale, (r.height() - 2 * m) / scale)
         pos = align_rect(panel["alignment"], 0, 0, full.width(), full.height(), area).topLeft()
         length = 214.0
-        np = {"status": "Playing", "title": "Song title", "artist": "Artist name", "art": "",
-              "length": length, "position": (self.t * 4) % length}
-        glow = bass_level(fake_spectrum(24, self.t)) if panel["glow"] else 0.0
+        np = {"status": "Playing", "title": "A song title long enough to scroll across the card",
+              "artist": "Artist name", "art": "", "length": length, "position": (self.t * 4) % length}
+        glow = bass_level(fake_spectrum(24, self.t)) if (panel["glow"] or panel["kind"] == "nowplaying") else 0.0
+        stats = fake_stats(self.t)
         qp.scale(scale, scale)
-        paint_panel(qp, pos, panel, p, {"items": items, "icons": self.icons, "np": np, "glow": glow})
+        paint_panel(qp, pos, panel, p, {"t": self.t, "items": items, "icons": self.icons, "np": np, "glow": glow,
+                                        "vinyl": (self.t * 130) % 360, "now": time.time(), "stats": stats,
+                                        "shown": {m: v[0] for m, v in stats.items() if m != "net"},
+                                        "weather": sample_weather(panel["weather_units"])})
         qp.end()
 
 
@@ -5132,14 +6242,26 @@ class PanelsTab(QWidget):
     CONTENT = {
         "launcher": [("folder", "folder", "Shortcuts folder", None), ("columns", "int", "Columns", (1, 12, "")),
                      ("icon_size", "int", "Icon size", (16, 160, " px")), ("labels", "bool", "Show names", None)],
-        "nowplaying": [("art_size", "int", "Album art size", (48, 320, " px")),
+        "nowplaying": [("art_style", "combo", "Album art", ART_STYLES),
+                       ("art_size", "int", "Album art size", (48, 320, " px")),
                        ("progress", "bool", "Progress bar (click to seek)", None),
                        ("controls", "bool", "Playback buttons", None)],
+        "clock": [("clock_style", "combo", "Style", CLOCK_STYLES), ("clock_size", "int", "Size", (16, 160, " px")),
+                  ("show_seconds", "bool", "Show seconds", None), ("show_date", "bool", "Show the date", None),
+                  ("date_format", "text", "Date format", None), ("twelve_hour", "bool", "12-hour time", None)],
+        "system": [("metrics", "checks", "Show", SYSTEM_METRICS), ("gauge_size", "int", "Gauge size", (48, 220, " px")),
+                   ("units", "combo", "Temperatures", [("c", "°C"), ("f", "°F")])],
+        "weather": [("location", "text", "Location (blank = auto)", None),
+                    ("weather_units", "combo", "Units", [("us", "°F, mph"), ("metric", "°C, km/h")]),
+                    ("forecast_days", "int", "Forecast days", (0, 3, "")),
+                    ("refresh", "int", "Refresh every", (5, 180, " min"))],
     }
     LOOK = [("name", "text", "Name", None), ("title", "text", "Title", None),
             ("width", "int", "Width", (120, 2000, " px")), ("opacity", "int", "Background", (0, 100, " %")),
             ("radius", "int", "Corner radius", (0, 60, " px")), ("padding", "int", "Padding", (4, 80, " px")),
-            ("border", "bool", "Outline", None), ("glow", "bool", "Glow with the bass (needs cava)", None)]
+            ("border", "bool", "Outline", None), ("shimmer", "bool", "Animated shimmer outline", None),
+            ("glow", "bool", "Glow with the bass (needs cava)", None),
+            ("animations", "bool", "Animations (fade-in, hover, motion)", None)]
     PLACE = [("alignment", "combo", "Position", ALIGNMENTS), ("gap_x", "int", "Offset  ↔", (-8000, 8000, " px")),
              ("gap_y", "int", "Offset  ↕", (-8000, 8000, " px")), ("screen", "screen", "Screen", None),
              ("x11", "bool", "Pin to exact position (runs through XWayland)", None),
@@ -5178,9 +6300,9 @@ class PanelsTab(QWidget):
         for b in (b_new, b_dup, b_del):
             row.addWidget(b)
         lv.addLayout(row)
-        lv.addWidget(hint_label("Panels are clickable windows on your desktop, drawn by ThemeForge in your "
-                                "palette. The games launcher shows every shortcut in a folder; the now playing "
-                                "card shows album art with playback buttons."))
+        lv.addWidget(hint_label("Panels are animated, clickable windows on your desktop, drawn by ThemeForge "
+                                "in your palette: a games launcher, a now playing card, a clock, system gauges "
+                                "and the weather."))
         split.addWidget(left)
 
         mid_scroll = QScrollArea()
@@ -5272,6 +6394,17 @@ class PanelsTab(QWidget):
         elif kind == "bool":
             w = QCheckBox()
             w.toggled.connect(lambda val: self.set_field(key, val))
+        elif kind == "checks":
+            w = QWidget()
+            g = QGridLayout(w)
+            g.setContentsMargins(0, 0, 0, 0)
+            w.boxes = {}
+            for i, (k, label) in enumerate(opts):
+                cb = QCheckBox(label)
+                cb.toggled.connect(lambda _on, box=w: self.set_field(
+                    key, [k2 for k2, c in box.boxes.items() if c.isChecked()]))
+                w.boxes[k] = cb
+                g.addWidget(cb, i // 2, i % 2)
         elif kind == "folder":
             w = QWidget()
             h = QHBoxLayout(w)
@@ -5331,6 +6464,9 @@ class PanelsTab(QWidget):
                     w.addItem(f"{val} (not connected)", val)
                     idx = w.count() - 1
                 w.setCurrentIndex(max(0, idx))
+            elif hasattr(w, "boxes"):
+                for k2, cb in w.boxes.items():
+                    cb.setChecked(k2 in val)
             else:
                 w.edit.setText(val)
         self.content_form.setRowVisible(self.launcher_tools, kind == "launcher")

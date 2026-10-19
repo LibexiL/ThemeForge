@@ -25,3 +25,10 @@ def home():
 def tf(home):
     import themeforge
     return themeforge
+
+
+@pytest.fixture(scope="session", autouse=True)
+def qapp():
+    """Painting text needs a Qt application object; one per test run."""
+    from PySide6.QtWidgets import QApplication
+    return QApplication.instance() or QApplication([])

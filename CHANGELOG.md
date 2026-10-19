@@ -1,5 +1,26 @@
 # Changelog
 
+## [2.3.0] - 2026-10-18
+
+### Added
+- **Three new panels:**
+  - **Clock**, in three styles: digital with a sweeping seconds ring, digital with a seconds bar, or analog with a smooth second hand.
+  - **System gauges**: animated arc gauges for CPU, RAM, GPU, CPU and GPU temperature, and disk, plus a network speed row. NVIDIA GPUs are read with `nvidia-smi`, AMD GPUs from sysfs.
+  - **Weather**: animated icons (turning sun, drifting clouds, falling rain and snow, lightning, a moon at night) and a 3-day forecast from wttr.in. Click the panel to open the full forecast.
+- **Animations everywhere ThemeForge draws:**
+  - Panels fade in, and colors blend smoothly whenever the palette changes (including in album-art mode).
+  - Games launcher icons lift and glow on hover, and bounce with a ripple when clicked.
+  - The now playing card crossfades album art, scrolls long titles, shows a small equalizer while playing, runs a light along the progress bar, and pulses the play button with the bass. It can also show the art as a **spinning record**.
+  - An optional **animated shimmer outline** for any panel.
+  - A per-panel "Animations" switch. With animations off, a panel only redraws when something changes.
+- **Visualizers:**
+  - Falling **peak caps**, held briefly before they drop.
+  - A **spin** setting for the radial ring, the new orb and the frame.
+  - A new **Orb** style: a glowing round wave.
+
+### Changed
+- Animation timers stop when nothing is moving, so idle panels use no CPU.
+
 ## [2.2.0] - 2026-10-18
 
 ### Added

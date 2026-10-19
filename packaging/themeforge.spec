@@ -1,5 +1,5 @@
 Name:           themeforge
-Version:        2.2.0
+Version:        2.3.0
 Release:        1%{?dist}
 Summary:        One palette for kitty, cava, KDE Plasma, widgets, panels and visualizers
 
@@ -51,5 +51,8 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/themeforge.desktop
 %{_datadir}/applications/themeforge.desktop
 
 %changelog
+* Sun Oct 18 2026 LibexiL <LibexiL@users.noreply.github.com> - 2.3.0-1
+- Animated panels and visualizers; clock, system gauges and weather panels
+
 * Sun Oct 18 2026 LibexiL <LibexiL@users.noreply.github.com> - 2.2.0-1
 - Panels, profiles, album-art mode, tray icon, more app targets, community themes

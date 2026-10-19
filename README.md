@@ -50,23 +50,26 @@ Build widgets from blocks:
 
 While a widget is running, edits show up on it live.
 
-### Panels: games launcher and now playing card
+### Panels
 
 ![Panels tab](docs/screenshots/panels.png)
 
-Panels are clickable windows on your desktop, drawn by ThemeForge in your palette.
-- **Games launcher** shows every shortcut in a folder (`~/Games` by default) as an icon grid.
-  - One click copies the game shortcuts from your Desktop, or picks games from the app menu, including Steam ones.
-  - It updates automatically when you add or remove shortcuts.
-- **Now playing card** shows album art, title, artist, a progress bar you can click to seek, and previous, play/pause and next buttons.
-- Both can **glow with the bass** of whatever's playing.
+Panels are animated, clickable windows on your desktop, drawn by ThemeForge in your palette.
+- **Games launcher** shows every shortcut in a folder (`~/Games` by default) as an icon grid. Icons lift and glow on hover and bounce when clicked. One click copies the game shortcuts from your Desktop.
+- **Now playing card** shows album art (square, or a spinning record) that crossfades between songs, scrolls long titles, has a seekable progress bar, and playback buttons that pulse with the bass.
+- **Clock**: digital with a sweeping seconds ring, a plain digital clock, or analog.
+- **System gauges**: animated arc gauges for CPU, RAM, GPU, temperatures and disk, plus network speed. NVIDIA and AMD GPUs are supported.
+- **Weather**: animated icons and a 3-day forecast from wttr.in.
+
+Any panel can **glow with the bass** or get an **animated shimmer outline**. Colors blend smoothly whenever your palette changes.
 
 ### Music visualizers
 
 ![Visualizers tab](docs/screenshots/visualizers.png)
 
 Run as many as you want at once, each in its own click-through window:
-- **7 styles:** bars, mirrored bars, LED blocks, wave, mirrored wave, radial ring, and a **frame** that wraps around a panel. A frame around the now playing card turns it into a speaker.
+- **8 styles:** bars, mirrored bars, LED blocks, wave, mirrored wave, radial ring, a glowing **orb**, and a **frame** that wraps around a panel. A frame around the now playing card turns it into a speaker.
+- **Motion:** falling **peak caps**, and **spin** for the ring, orb and frame.
 - **Appearance:** palette gradient or a single color, stereo mode with bass in the middle, rounded bars, bass glow, opacity, smoothing and frame rate.
 - **Placement:** any corner or edge, offset in pixels, and choice of monitor.
 
