@@ -1,0 +1,37 @@
+{
+  "name": "Synthwave '84",
+  "author": "ThemeForge",
+  "description": "Based on Robb Owen's Synthwave '84 - pink, cyan and sunset yellow.",
+  "palette": {
+    "background": "#262335",
+    "surface": "#34294f",
+    "foreground": "#f0eff1",
+    "muted": "#848bbd",
+    "accent": "#ff7edb",
+    "accent2": "#36f9f6",
+    "ansi": [
+      "#34294f",
+      "#fe4450",
+      "#72f1b8",
+      "#fede5d",
+      "#2ee2fa",
+      "#ff7edb",
+      "#36f9f6",
+      "#d0d1e1",
+      "#848bbd",
+      "#fe6871",
+      "#92f4c8",
+      "#fee580",
+      "#51e7fb",
+      "#ffa2e5",
+      "#59faf8",
+      "#f0eff1"
+    ],
+    "gradient": [
+      "#36f9f6",
+      "#ff7edb",
+      "#fe4450",
+      "#fede5d"
+    ]
+  }
+}

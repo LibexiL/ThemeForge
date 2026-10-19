@@ -1,0 +1,36 @@
+{
+  "name": "Kanagawa",
+  "author": "ThemeForge",
+  "description": "Based on rebelot's Kanagawa - muted ink blues and autumn colors.",
+  "palette": {
+    "background": "#1f1f28",
+    "surface": "#2a2a37",
+    "foreground": "#dcd7ba",
+    "muted": "#727169",
+    "accent": "#957fb8",
+    "accent2": "#7e9cd8",
+    "ansi": [
+      "#2a2a37",
+      "#c34043",
+      "#76946a",
+      "#c0a36e",
+      "#7e9cd8",
+      "#957fb8",
+      "#6a9589",
+      "#bcb8a2",
+      "#727169",
+      "#cc5b5e",
+      "#89a37f",
+      "#cbb387",
+      "#99b1e0",
+      "#a896c5",
+      "#7fa49a",
+      "#dcd7ba"
+    ],
+    "gradient": [
+      "#7e9cd8",
+      "#957fb8",
+      "#c34043"
+    ]
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "name": "Ayu Mirage",
+  "author": "ThemeForge",
+  "description": "Based on ayu's Mirage variant - warm yellow on slate.",
+  "palette": {
+    "background": "#1f2430",
+    "surface": "#2a2f3a",
+    "foreground": "#cccac2",
+    "muted": "#707a8c",
+    "accent": "#ffcc66",
+    "accent2": "#73d0ff",
+    "ansi": [
+      "#2a2f3a",
+      "#f28779",
+      "#d5ff80",
+      "#ffd173",
+      "#73d0ff",
+      "#dfbfff",
+      "#95e6cb",
+      "#b0b2b2",
+      "#707a8c",
+      "#f5a49a",
+      "#e1ffa4",
+      "#ffdd97",
+      "#97dcff",
+      "#f1e3ff",
+      "#b2edd9",
+      "#cccac2"
+    ],
+    "gradient": [
+      "#73d0ff",
+      "#ffcc66",
+      "#dfbfff",
+      "#f28779"
+    ]
+  }
+}

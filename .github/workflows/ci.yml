@@ -18,8 +18,14 @@ jobs:
       - name: Install
         run: pip install -r requirements.txt pytest ruff
       - name: Lint
-        run: ruff check --select F,E9 themeforge.py tests
+        run: ruff check --select F,E9 themeforge.py tests tools
       - name: Shell scripts
         run: bash -n install.sh && bash -n uninstall.sh
+      - name: Community themes
+        run: python3 tools/build_theme_index.py --check
+      - name: Python 3.10 syntax
+        run: ruff check --target-version py310 --select E9 themeforge.py tools tests
+      - name: Desktop file
+        run: sudo apt-get install -y desktop-file-utils && desktop-file-validate packaging/themeforge.desktop
       - name: Tests
         run: QT_QPA_PLATFORM=offscreen pytest -q tests

@@ -1,0 +1,36 @@
+{
+  "name": "Rosé Pine Dawn",
+  "author": "ThemeForge",
+  "description": "Based on Rosé Pine Dawn - a soft light theme.",
+  "palette": {
+    "background": "#faf4ed",
+    "surface": "#f2e9e1",
+    "foreground": "#575279",
+    "muted": "#9893a5",
+    "accent": "#907aa9",
+    "accent2": "#56949f",
+    "ansi": [
+      "#f2e9e1",
+      "#b4637a",
+      "#286983",
+      "#ea9d34",
+      "#286983",
+      "#907aa9",
+      "#56949f",
+      "#6a6686",
+      "#9893a5",
+      "#a44f67",
+      "#205368",
+      "#e38d17",
+      "#205368",
+      "#7e649b",
+      "#497e88",
+      "#575279"
+    ],
+    "gradient": [
+      "#56949f",
+      "#907aa9",
+      "#b4637a"
+    ]
+  }
+}

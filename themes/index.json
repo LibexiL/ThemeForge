@@ -1,0 +1,314 @@
+{
+ "version": 1,
+ "themes": [
+  {
+   "name": "Ayu Mirage",
+   "author": "ThemeForge",
+   "description": "Based on ayu's Mirage variant - warm yellow on slate.",
+   "file": "ayu-mirage.json",
+   "palette": {
+    "background": "#1f2430",
+    "surface": "#2a2f3a",
+    "foreground": "#cccac2",
+    "muted": "#707a8c",
+    "accent": "#ffcc66",
+    "accent2": "#73d0ff",
+    "ansi": [
+     "#2a2f3a",
+     "#f28779",
+     "#d5ff80",
+     "#ffd173",
+     "#73d0ff",
+     "#dfbfff",
+     "#95e6cb",
+     "#b0b2b2",
+     "#707a8c",
+     "#f5a49a",
+     "#e1ffa4",
+     "#ffdd97",
+     "#97dcff",
+     "#f1e3ff",
+     "#b2edd9",
+     "#cccac2"
+    ],
+    "gradient": [
+     "#73d0ff",
+     "#ffcc66",
+     "#dfbfff",
+     "#f28779"
+    ],
+    "name": "Ayu Mirage"
+   }
+  },
+  {
+   "name": "Cyberpunk Neon",
+   "author": "ThemeForge",
+   "description": "Electric yellow on near-black with neon cyan and magenta.",
+   "file": "cyberpunk-neon.json",
+   "palette": {
+    "background": "#0b0b14",
+    "surface": "#1a1a2e",
+    "foreground": "#e0e0f0",
+    "muted": "#6b6b8a",
+    "accent": "#fcee0a",
+    "accent2": "#00f0ff",
+    "ansi": [
+     "#1a1a2e",
+     "#ff003c",
+     "#00ff9f",
+     "#fcee0a",
+     "#00b8ff",
+     "#d600ff",
+     "#00f0ff",
+     "#bdbdd1",
+     "#6b6b8a",
+     "#ff2457",
+     "#24ffac",
+     "#fcf02d",
+     "#24c2ff",
+     "#dc24ff",
+     "#24f2ff",
+     "#e0e0f0"
+    ],
+    "gradient": [
+     "#00f0ff",
+     "#d600ff",
+     "#ff003c",
+     "#fcee0a"
+    ],
+    "name": "Cyberpunk Neon"
+   }
+  },
+  {
+   "name": "Kanagawa",
+   "author": "ThemeForge",
+   "description": "Based on rebelot's Kanagawa - muted ink blues and autumn colors.",
+   "file": "kanagawa.json",
+   "palette": {
+    "background": "#1f1f28",
+    "surface": "#2a2a37",
+    "foreground": "#dcd7ba",
+    "muted": "#727169",
+    "accent": "#957fb8",
+    "accent2": "#7e9cd8",
+    "ansi": [
+     "#2a2a37",
+     "#c34043",
+     "#76946a",
+     "#c0a36e",
+     "#7e9cd8",
+     "#957fb8",
+     "#6a9589",
+     "#bcb8a2",
+     "#727169",
+     "#cc5b5e",
+     "#89a37f",
+     "#cbb387",
+     "#99b1e0",
+     "#a896c5",
+     "#7fa49a",
+     "#dcd7ba"
+    ],
+    "gradient": [
+     "#7e9cd8",
+     "#957fb8",
+     "#c34043"
+    ],
+    "name": "Kanagawa"
+   }
+  },
+  {
+   "name": "Neon Underground",
+   "author": "ThemeForge",
+   "description": "Hot magenta and cyan tube lights in a purple-black tunnel, with a touch of lamp yellow.",
+   "file": "neon-underground.json",
+   "palette": {
+    "background": "#160c1c",
+    "surface": "#2a1733",
+    "foreground": "#f1e6f5",
+    "muted": "#8c6f99",
+    "accent": "#d14cff",
+    "accent2": "#35e3e0",
+    "ansi": [
+     "#2a1733",
+     "#ff4f7b",
+     "#5cf2a6",
+     "#f4e84f",
+     "#6a7dff",
+     "#d14cff",
+     "#35e3e0",
+     "#d3c2d9",
+     "#8c6f99",
+     "#ff7396",
+     "#7df5b8",
+     "#f6ec71",
+     "#8e9cff",
+     "#da70ff",
+     "#54e7e5",
+     "#f1e6f5"
+    ],
+    "gradient": [
+     "#35e3e0",
+     "#7f6bff",
+     "#d14cff",
+     "#ff4f9e"
+    ],
+    "name": "Neon Underground"
+   }
+  },
+  {
+   "name": "One Dark",
+   "author": "ThemeForge",
+   "description": "Based on Atom's One Dark.",
+   "file": "one-dark.json",
+   "palette": {
+    "background": "#282c34",
+    "surface": "#3e4451",
+    "foreground": "#abb2bf",
+    "muted": "#5c6370",
+    "accent": "#61afef",
+    "accent2": "#c678dd",
+    "ansi": [
+     "#3e4451",
+     "#e06c75",
+     "#98c379",
+     "#e5c07b",
+     "#61afef",
+     "#c678dd",
+     "#56b6c2",
+     "#939aa7",
+     "#5c6370",
+     "#e68991",
+     "#abce92",
+     "#ebce99",
+     "#81bff2",
+     "#d295e4",
+     "#70c1cb",
+     "#abb2bf"
+    ],
+    "gradient": [
+     "#c678dd",
+     "#61afef",
+     "#e06c75"
+    ],
+    "name": "One Dark"
+   }
+  },
+  {
+   "name": "Rosé Pine Dawn",
+   "author": "ThemeForge",
+   "description": "Based on Rosé Pine Dawn - a soft light theme.",
+   "file": "rose-pine-dawn.json",
+   "palette": {
+    "background": "#faf4ed",
+    "surface": "#f2e9e1",
+    "foreground": "#575279",
+    "muted": "#9893a5",
+    "accent": "#907aa9",
+    "accent2": "#56949f",
+    "ansi": [
+     "#f2e9e1",
+     "#b4637a",
+     "#286983",
+     "#ea9d34",
+     "#286983",
+     "#907aa9",
+     "#56949f",
+     "#6a6686",
+     "#9893a5",
+     "#a44f67",
+     "#205368",
+     "#e38d17",
+     "#205368",
+     "#7e649b",
+     "#497e88",
+     "#575279"
+    ],
+    "gradient": [
+     "#56949f",
+     "#907aa9",
+     "#b4637a"
+    ],
+    "name": "Rosé Pine Dawn"
+   }
+  },
+  {
+   "name": "Solarized Dark",
+   "author": "ThemeForge",
+   "description": "Based on Ethan Schoonover's Solarized.",
+   "file": "solarized-dark.json",
+   "palette": {
+    "background": "#002b36",
+    "surface": "#073642",
+    "foreground": "#93a1a1",
+    "muted": "#586e75",
+    "accent": "#268bd2",
+    "accent2": "#2aa198",
+    "ansi": [
+     "#073642",
+     "#dc322f",
+     "#859900",
+     "#b58900",
+     "#268bd2",
+     "#d33682",
+     "#2aa198",
+     "#819294",
+     "#586e75",
+     "#e1504e",
+     "#a4bd00",
+     "#d9a400",
+     "#3f9cdc",
+     "#d95394",
+     "#31bdb3",
+     "#93a1a1"
+    ],
+    "gradient": [
+     "#2aa198",
+     "#268bd2",
+     "#d33682",
+     "#dc322f"
+    ],
+    "name": "Solarized Dark"
+   }
+  },
+  {
+   "name": "Synthwave '84",
+   "author": "ThemeForge",
+   "description": "Based on Robb Owen's Synthwave '84 - pink, cyan and sunset yellow.",
+   "file": "synthwave-84.json",
+   "palette": {
+    "background": "#262335",
+    "surface": "#34294f",
+    "foreground": "#f0eff1",
+    "muted": "#848bbd",
+    "accent": "#ff7edb",
+    "accent2": "#36f9f6",
+    "ansi": [
+     "#34294f",
+     "#fe4450",
+     "#72f1b8",
+     "#fede5d",
+     "#2ee2fa",
+     "#ff7edb",
+     "#36f9f6",
+     "#d0d1e1",
+     "#848bbd",
+     "#fe6871",
+     "#92f4c8",
+     "#fee580",
+     "#51e7fb",
+     "#ffa2e5",
+     "#59faf8",
+     "#f0eff1"
+    ],
+    "gradient": [
+     "#36f9f6",
+     "#ff7edb",
+     "#fe4450",
+     "#fede5d"
+    ],
+    "name": "Synthwave '84"
+   }
+  }
+ ]
+}

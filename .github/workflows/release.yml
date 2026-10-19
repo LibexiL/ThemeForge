@@ -15,12 +15,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Tag must match VERSION in themeforge.py
+      - name: Tag must match VERSION in themeforge.py and the RPM spec
         run: |
           file_ver=$(grep -Po '^VERSION = "\K[^"]+' themeforge.py)
+          spec_ver=$(sed -n 's/^Version:[[:space:]]*//p' packaging/themeforge.spec)
           tag_ver="${GITHUB_REF_NAME#v}"
-          if [ "$file_ver" != "$tag_ver" ]; then
-            echo "::error::themeforge.py says VERSION = \"$file_ver\" but the tag is $GITHUB_REF_NAME"
+          if [ "$file_ver" != "$tag_ver" ] || [ "$spec_ver" != "$tag_ver" ]; then
+            echo "::error::tag is $GITHUB_REF_NAME but themeforge.py says $file_ver and the spec says $spec_ver"
             exit 1
           fi
 

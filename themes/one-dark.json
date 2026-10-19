@@ -1,0 +1,36 @@
+{
+  "name": "One Dark",
+  "author": "ThemeForge",
+  "description": "Based on Atom's One Dark.",
+  "palette": {
+    "background": "#282c34",
+    "surface": "#3e4451",
+    "foreground": "#abb2bf",
+    "muted": "#5c6370",
+    "accent": "#61afef",
+    "accent2": "#c678dd",
+    "ansi": [
+      "#3e4451",
+      "#e06c75",
+      "#98c379",
+      "#e5c07b",
+      "#61afef",
+      "#c678dd",
+      "#56b6c2",
+      "#939aa7",
+      "#5c6370",
+      "#e68991",
+      "#abce92",
+      "#ebce99",
+      "#81bff2",
+      "#d295e4",
+      "#70c1cb",
+      "#abb2bf"
+    ],
+    "gradient": [
+      "#c678dd",
+      "#61afef",
+      "#e06c75"
+    ]
+  }
+}

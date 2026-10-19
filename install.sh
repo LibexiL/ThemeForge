@@ -46,7 +46,7 @@ cat > "$HOME/.local/share/applications/themeforge.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=ThemeForge
-Comment=Theme kitty, cava, KDE, widgets and visualizers from one palette
+Comment=Theme kitty, cava, KDE, widgets, panels and visualizers from one palette
 Exec=python3 $APPDIR/themeforge.py
 Icon=preferences-desktop-color
 Categories=Settings;DesktopSettings;Qt;

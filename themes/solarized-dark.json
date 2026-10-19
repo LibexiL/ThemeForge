@@ -1,0 +1,37 @@
+{
+  "name": "Solarized Dark",
+  "author": "ThemeForge",
+  "description": "Based on Ethan Schoonover's Solarized.",
+  "palette": {
+    "background": "#002b36",
+    "surface": "#073642",
+    "foreground": "#93a1a1",
+    "muted": "#586e75",
+    "accent": "#268bd2",
+    "accent2": "#2aa198",
+    "ansi": [
+      "#073642",
+      "#dc322f",
+      "#859900",
+      "#b58900",
+      "#268bd2",
+      "#d33682",
+      "#2aa198",
+      "#819294",
+      "#586e75",
+      "#e1504e",
+      "#a4bd00",
+      "#d9a400",
+      "#3f9cdc",
+      "#d95394",
+      "#31bdb3",
+      "#93a1a1"
+    ],
+    "gradient": [
+      "#2aa198",
+      "#268bd2",
+      "#d33682",
+      "#dc322f"
+    ]
+  }
+}

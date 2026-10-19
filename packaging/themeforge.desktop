@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=ThemeForge
+Comment=Theme kitty, cava, KDE, widgets, panels and visualizers from one palette
+Exec=themeforge
+Icon=preferences-desktop-color
+Categories=Settings;DesktopSettings;Qt;
+Keywords=theme;colors;palette;conky;cava;kitty;visualizer;
+Terminal=false

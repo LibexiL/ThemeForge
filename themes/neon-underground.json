@@ -1,0 +1,37 @@
+{
+  "name": "Neon Underground",
+  "author": "ThemeForge",
+  "description": "Hot magenta and cyan tube lights in a purple-black tunnel, with a touch of lamp yellow.",
+  "palette": {
+    "background": "#160c1c",
+    "surface": "#2a1733",
+    "foreground": "#f1e6f5",
+    "muted": "#8c6f99",
+    "accent": "#d14cff",
+    "accent2": "#35e3e0",
+    "ansi": [
+      "#2a1733",
+      "#ff4f7b",
+      "#5cf2a6",
+      "#f4e84f",
+      "#6a7dff",
+      "#d14cff",
+      "#35e3e0",
+      "#d3c2d9",
+      "#8c6f99",
+      "#ff7396",
+      "#7df5b8",
+      "#f6ec71",
+      "#8e9cff",
+      "#da70ff",
+      "#54e7e5",
+      "#f1e6f5"
+    ],
+    "gradient": [
+      "#35e3e0",
+      "#7f6bff",
+      "#d14cff",
+      "#ff4f9e"
+    ]
+  }
+}

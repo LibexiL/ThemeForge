@@ -33,21 +33,22 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QPointF, QProcess, QRectF, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import (QFileInfo, QFileSystemWatcher, QObject, QPointF, QProcess, QRectF, QSize,
+                            Qt, QTimer, QUrl, Signal)
 from PySide6.QtGui import (QBrush, QColor, QDesktopServices, QFont, QFontDatabase,
                            QFontMetricsF, QGradient, QGuiApplication, QIcon, QImage,
                            QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
                            QRadialGradient)
 from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
-                               QDialog, QDialogButtonBox, QDoubleSpinBox,
+                               QDialog, QFileIconProvider, QSystemTrayIcon, QDialogButtonBox, QDoubleSpinBox,
                                QFileDialog, QFontComboBox, QFormLayout, QFrame,
                                QGridLayout, QGroupBox, QHBoxLayout, QInputDialog,
-                               QLabel, QLineEdit, QListWidget, QMainWindow, QMenu,
+                               QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu,
                                QMessageBox, QPlainTextEdit, QPushButton,
                                QScrollArea, QSpinBox, QSplitter, QTabWidget,
                                QToolButton, QVBoxLayout, QWidget)
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 # GitHub "owner/repo" the auto-updater checks for new releases
 GITHUB_REPO = "LibexiL/ThemeForge"
 HOME = Path.home()
@@ -467,10 +468,22 @@ BLOCK_TYPES = {
     "disk":       ("Disk", [F("label", "text", "Label", "Disk"), F("path", "text", "Mount point", "/"),
                             F("style", "choice", "Style", "bar", ["bar", "text"]),
                             F("role", "role", "Color", "accent")]),
-    "network":    ("Network", [F("label", "text", "Label", "Net"),
+    "network":    ("Network", [F("label_down", "text", "Download label", "Download"),
+                               F("label_up", "text", "Upload label", "Upload"),
                                F("iface", "text", "Interface (blank = auto)", ""),
                                F("style", "choice", "Style", "graph", ["graph", "text"]),
                                F("role", "role", "Color", "accent2")]),
+    "cputemp":    ("CPU temperature", [F("label", "text", "Label", "CPU temp"),
+                                       F("units", "choice", "Units", "c", ["c", "f"]),
+                                       F("role", "role", "Color", "foreground")]),
+    "gpu":        ("GPU", [F("label", "text", "Label", "GPU"),
+                           F("style", "choice", "Style", "bar", ["bar", "text"]),
+                           F("temp", "bool", "Show temperature", True),
+                           F("units", "choice", "Units", "c", ["c", "f"]),
+                           F("role", "role", "Color", "accent")]),
+    "calendar":   ("Calendar", [F("start", "choice", "Week starts on", "sunday", ["sunday", "monday"]),
+                                F("size", "int", "Size", 10, SIZE), F("align", "align", "Align", "center"),
+                                F("role", "role", "Today color", "accent")]),
     "nowplaying": ("Now playing", [F("size", "int", "Title size", 12, SIZE), F("align", "align", "Align", "left"),
                                    F("role", "role", "Color", "accent")]),
     "weather":    ("Weather", [F("location", "text", "Location (blank = auto)", ""),
@@ -503,6 +516,8 @@ def block_summary(b):
     detail = {"clock": b.get("format"), "date": b.get("format"), "heading": b.get("text"),
               "text": b.get("text"), "cpu": b.get("style"), "memory": b.get("style"),
               "disk": b.get("path"), "network": b.get("iface") or "auto",
+              "cputemp": "°F" if b.get("units") == "f" else "°C", "gpu": b.get("style"),
+              "calendar": f"{b.get('start', 'sunday').capitalize()} first",
               "weather": b.get("location") or "auto", "processes": f"top {b.get('count')}",
               "command": b.get("command")}.get(b["type"])
     return f"{title}  ·  {detail}" if detail else title
@@ -573,7 +588,11 @@ def conky_lines(b, w, p):
         return f"{C(lr)}{esc(label)}${{alignr}}{C(vr)}{value}"
 
     def graph(var, role):
-        return f"${{{var} 28,0 {hx(role)} {hx('accent2' if role != 'accent2' else 'accent')}}}"
+        # explicit width: some conky versions draw a 0-width ("full width") graph as a sliver
+        return f"${{{var} 28,{w['width']} {hx(role)} {hx('accent2' if role != 'accent2' else 'accent')}}}"
+
+    def helper(*args):
+        return " ".join([f"'{HELPER_PATH}'", *args])
 
     if t in ("clock", "date"):
         return [f"{A}{font(b['size'], b['bold'])}{C(b['role'])}${{time {esc(b['format'])}}}${{font}}"]
@@ -601,13 +620,27 @@ def conky_lines(b, w, p):
         return out
     if t == "network":
         I = b["iface"].strip() or detect_iface() or "eth0"
-        out = [kv(f"{b['label']} ↓", f"${{downspeed {I}}}")]
+        out = [kv(b["label_down"], f"${{downspeed {I}}}")]
         if b["style"] == "graph":
             out.append(graph(f"downspeedgraph {I}", b["role"]))
-        out.append(kv(f"{b['label']} ↑", f"${{upspeed {I}}}"))
+        out.append(kv(b["label_up"], f"${{upspeed {I}}}"))
         if b["style"] == "graph":
             out.append(graph(f"upspeedgraph {I}", b["role"]))
         return out
+    if t == "cputemp":
+        return [kv(b["label"], f"${{execi 5 {helper('cputemp', b['units'])}}}", vr=b["role"])]
+    if t == "gpu":
+        out = [kv(b["label"], f"${{execi 3 {helper('gpu', 'usage')}}}")]
+        if b["style"] == "bar":
+            out.append(f"{C(b['role'])}${{execibar 3 {helper('gpu', 'usage-raw')}}}")
+        if b["temp"]:
+            out.append(kv(f"{b['label']} temp", f"${{execi 5 {helper('gpu', 'temp', b['units'])}}}"))
+        return out
+    if t == "calendar":
+        mono = "${font monospace:size=%d}" % b["size"]
+        slot = COLOR_SLOTS.index(b["role"]) if b["role"] in COLOR_SLOTS else 1
+        cmd = helper("calendar", b["start"], str(slot), b.get("align", "center"))
+        return [f"{mono}${{execpi 600 {cmd}}}${{font}}"]
     if t == "nowplaying":
         title = "${execi 2 (playerctl metadata title 2>/dev/null || echo 'Nothing playing') | cut -c1-40}"
         artist = "${execi 2 playerctl metadata artist 2>/dev/null | cut -c1-44}"
@@ -677,7 +710,139 @@ conky.text = [[
 """
 
 
+HELPER_PATH = CFG_DIR / "bin" / "tf-helper"
+HELPER_SRC = r"""#!/usr/bin/env python3
+# ThemeForge widget helper - generated by ThemeForge and overwritten when it changes.
+#   tf-helper cputemp c|f
+#   tf-helper gpu usage|usage-raw|temp [c|f]
+#   tf-helper calendar sunday|monday <conky color slot> left|center|right
+import calendar
+import datetime
+import glob
+import shutil
+import subprocess
+import sys
+
+
+def read(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def fmt_temp(celsius, units):
+    if celsius is None:
+        return "n/a"
+    return f"{round(celsius * 9 / 5 + 32)}°F" if units == "f" else f"{round(celsius)}°C"
+
+
+def hwmon_temp(names, preferred=("tctl", "tdie", "package id 0", "edge", "junction")):
+    for h in sorted(glob.glob("/sys/class/hwmon/hwmon*")):
+        if read(h + "/name") not in names:
+            continue
+        first = None
+        for inp in sorted(glob.glob(h + "/temp*_input")):
+            v = read(inp)
+            if v is None or not v.lstrip("-").isdigit():
+                continue
+            label = (read(inp.replace("_input", "_label")) or "").lower()
+            if label in preferred:
+                return int(v) / 1000
+            first = first if first is not None else int(v) / 1000
+        if first is not None:
+            return first
+    return None
+
+
+def nvidia(query):
+    if not shutil.which("nvidia-smi"):
+        return None
+    try:
+        out = subprocess.run(["nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=3).stdout.strip().splitlines()
+        return out[0].strip() if out and out[0].strip().replace(".", "").isdigit() else None
+    except Exception:
+        return None
+
+
+def gpu_usage():
+    v = nvidia("utilization.gpu")
+    if v is not None:
+        return int(float(v))
+    for f in sorted(glob.glob("/sys/class/drm/card*/device/gpu_busy_percent")):
+        v = read(f)
+        if v and v.isdigit():
+            return int(v)
+    return None
+
+
+def gpu_temp():
+    v = nvidia("temperature.gpu")
+    if v is not None:
+        return float(v)
+    return hwmon_temp(("amdgpu", "nouveau", "radeon", "i915", "xe"))
+
+
+def month(start, slot, align):
+    today = datetime.date.today()
+    first = 6 if start == "sunday" else 0
+    A = {"center": "${alignc}", "right": "${alignr}"}.get(align, "")
+    names = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
+    names = names[first:] + names[:first]
+    lines = [A + "${color%s}%s${color0}" % (slot, today.strftime("%B %Y").center(20).rstrip()),
+             A + "${color3}" + " ".join(names) + "${color0}"]
+    for week in calendar.Calendar(first).monthdayscalendar(today.year, today.month):
+        cells = []
+        for d in week:
+            if d == 0:
+                cells.append("  ")
+            elif d == today.day:
+                cells.append("${color%s}%2d${color0}" % (slot, d))
+            else:
+                cells.append("%2d" % d)
+        lines.append(A + " ".join(cells))
+    return "\n".join(lines)
+
+
+def main(a):
+    if not a:
+        return ""
+    if a[0] == "cputemp":
+        return fmt_temp(hwmon_temp(("k10temp", "coretemp", "zenpower", "cpu_thermal", "acpitz")),
+                        a[1] if len(a) > 1 else "c")
+    if a[0] == "gpu":
+        what = a[1] if len(a) > 1 else "usage"
+        if what == "temp":
+            return fmt_temp(gpu_temp(), a[2] if len(a) > 2 else "c")
+        u = gpu_usage()
+        if what == "usage-raw":
+            return str(u or 0)
+        return "n/a" if u is None else f"{u}%"
+    if a[0] == "calendar":
+        return month(a[1] if len(a) > 1 else "sunday", a[2] if len(a) > 2 else "1",
+                     a[3] if len(a) > 3 else "center")
+    return ""
+
+
+print(main(sys.argv[1:]))
+"""
+
+
+def ensure_helper():
+    try:
+        if HELPER_PATH.exists() and HELPER_PATH.read_text() == HELPER_SRC:
+            return
+    except OSError:
+        pass
+    HELPER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    HELPER_PATH.write_text(HELPER_SRC)
+    HELPER_PATH.chmod(0o755)
+
+
 def write_widget(w, p):
+    ensure_helper()
     WIDGETS_DIR.mkdir(parents=True, exist_ok=True)
     path = widget_path(w)
     path.write_text(conky_config(w, p))
@@ -720,12 +885,40 @@ def preview_rows(b, w, p):
             rows.append(("bar", 0.23, b["role"]))
         return rows
     if t == "network":
-        rows = [("kv", f"{b['label']} ↓", "1.4MiB", "muted", "foreground")]
+        rows = [("kv", b["label_down"], "1.4MiB", "muted", "foreground")]
         if b["style"] == "graph":
             rows.append(("graph", 3, b["role"]))
-        rows.append(("kv", f"{b['label']} ↑", "86KiB", "muted", "foreground"))
+        rows.append(("kv", b["label_up"], "86KiB", "muted", "foreground"))
         if b["style"] == "graph":
             rows.append(("graph", 4, b["role"]))
+        return rows
+    if t == "cputemp":
+        return [("kv", b["label"], "126°F" if b["units"] == "f" else "52°C", "muted", b["role"])]
+    if t == "gpu":
+        rows = [("kv", b["label"], "37%", "muted", "foreground")]
+        if b["style"] == "bar":
+            rows.append(("bar", 0.37, b["role"]))
+        if b["temp"]:
+            rows.append(("kv", f"{b['label']} temp", "135°F" if b["units"] == "f" else "57°C",
+                         "muted", "foreground"))
+        return rows
+    if t == "calendar":
+        import calendar as _cal
+        today = time.localtime()
+        first = 6 if b["start"] == "sunday" else 0
+        names = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
+        names = names[first:] + names[:first]
+        rows = [("mono", [(time.strftime("%B %Y").center(20).rstrip(), b["role"])], b["size"], b["align"]),
+                ("mono", [(" ".join(names), "muted")], b["size"], b["align"])]
+        for week in _cal.Calendar(first).monthdayscalendar(today.tm_year, today.tm_mon):
+            segs = []
+            for i, d in enumerate(week):
+                sep = " " if i else ""
+                if d == today.tm_mday:
+                    segs += [(sep, "foreground"), ("%2d" % d, b["role"])]
+                else:
+                    segs.append((sep + ("%2d" % d if d else "  "), "foreground"))
+            rows.append(("mono", segs, b["size"], b["align"]))
         return rows
     if t == "nowplaying":
         return [("text", "Song title", b["role"], b["size"], True, al),
@@ -750,36 +943,611 @@ def preview_rows(b, w, p):
 
 
 # ════════════════════════════════════════════════════════════════════
-#  Music visualizers (drawn by ThemeForge, audio data from cava)
+#  Desktop windows drawn by ThemeForge: music visualizers and panels
 # ════════════════════════════════════════════════════════════════════
 
 VIS_DIR = CFG_DIR / "visualizers"
+PANELS_DIR = CFG_DIR / "panels"
+LIVE_PALETTE_FILE = CFG_DIR / "live-palette.json"
+ART_CACHE = HOME / ".cache" / "themeforge" / "art"
+GLOW_MARGIN = 18
+
+
+def write_live_palette(p):
+    """The palette running visualizers and panels draw with (changes on Apply and in album-art mode)."""
+    CFG_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = LIVE_PALETTE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(p))
+    tmp.replace(LIVE_PALETTE_FILE)
+
+
+def read_live_palette(fallback):
+    try:
+        p = json.loads(LIVE_PALETTE_FILE.read_text())
+        return p if valid_palette(p) else fallback
+    except Exception:
+        return fallback
+
+
+def _mtime(path):
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0
+
+
+# ── background processes (one per visualizer / panel, plus the tray service) ──
+
+def tf_pids(flag, item_id=None):
+    """PIDs of ThemeForge processes started with `flag` (and item_id), read from each process's real
+    argument list so shells or editors that merely mention the command don't count."""
+    try:
+        out = subprocess.run(["pgrep", "-f", "themeforge"], capture_output=True, text=True, timeout=5).stdout
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return []
+    pids = []
+    for tok in out.split():
+        try:
+            pid = int(tok)
+            argv = Path(f"/proc/{pid}/cmdline").read_bytes().decode(errors="ignore").split("\0")
+        except (ValueError, OSError):
+            continue
+        if pid == os.getpid() or flag not in argv:
+            continue
+        if not any(a.endswith("themeforge.py") or a.endswith("/themeforge") for a in argv[:argv.index(flag)]):
+            continue
+        i = argv.index(flag)
+        if item_id is None or (i + 1 < len(argv) and argv[i + 1] == item_id):
+            pids.append(pid)
+    return pids
+
+
+def start_tf_process(flag, item_id=None, x11=False, log_dir=None):
+    log_dir = log_dir or CFG_DIR
+    log_dir.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    if x11:
+        env["QT_QPA_PLATFORM"] = "xcb"      # XWayland lets the window place itself
+    args = [sys.executable, str(SCRIPT), flag] + ([item_id] if item_id else [])
+    with open(log_dir / f"{item_id or flag.strip('-')}.log", "w") as log:
+        subprocess.Popen(args, env=env, stdout=log, stderr=log, start_new_session=True)
+
+
+def stop_tf_process(flag, item_id=None):
+    for pid in tf_pids(flag, item_id):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+
+def vis_pids(vid=None):
+    return tf_pids("--visualizer", vid)
+
+
+def start_visualizer(v):
+    if not shutil.which("cava"):
+        return False
+    start_tf_process("--visualizer", v["id"], v.get("x11", True), VIS_DIR)
+    return True
+
+
+def stop_visualizer(vid):
+    stop_tf_process("--visualizer", vid)
+
+
+def panel_pids(pid=None):
+    return tf_pids("--panel", pid)
+
+
+def start_panel(panel):
+    start_tf_process("--panel", panel["id"], panel.get("x11", True), PANELS_DIR)
+    return True
+
+
+def stop_panel(pid):
+    stop_tf_process("--panel", pid)
+
+
+# ── geometry ───────────────────────────────────────────────────────
+
+def align_rect(alignment, gap_x, gap_y, W, H, g):
+    vert, horiz = alignment.split("_")
+    x = {"left": g.left() + gap_x, "middle": g.left() + (g.width() - W) / 2 + gap_x,
+         "right": g.left() + g.width() - W - gap_x}[horiz]
+    y = {"top": g.top() + gap_y, "middle": g.top() + (g.height() - H) / 2 + gap_y,
+         "bottom": g.top() + g.height() - H - gap_y}[vert]
+    return QRectF(x, y, W, H)
+
+
+def screen_for(name):
+    scr = next((s for s in QGuiApplication.screens() if s.name() == name), None)
+    return scr or QGuiApplication.primaryScreen()
+
+
+# ── panels ─────────────────────────────────────────────────────────
+
+PANEL_KINDS = [("launcher", "Games launcher"), ("nowplaying", "Now playing card")]
+
+
+def panel_template(kind="launcher"):
+    p = {"id": uuid.uuid4().hex[:8], "kind": kind, "name": "Panel", "title": "", "alignment": "bottom_left",
+         "gap_x": 40, "gap_y": 60, "width": 360, "opacity": 75, "radius": 14, "padding": 16, "border": True,
+         "glow": False, "screen": "", "x11": True, "autostart": False,
+         "folder": "~/Games", "columns": 4, "icon_size": 48, "labels": True,
+         "art_size": 104, "controls": True, "progress": True}
+    if kind == "launcher":
+        p.update(name="Games", title="GAMES")
+    else:
+        p.update(kind="nowplaying", name="Now playing", title="NOW PLAYING", alignment="bottom_right",
+                 gap_y=220, width=400)
+    return p
+
+
+def normalize_panel(panel):
+    base = panel_template(panel.get("kind", "launcher"))
+    for k, v in base.items():
+        panel.setdefault(k, v)
+    if panel["kind"] not in dict(PANEL_KINDS):
+        panel["kind"] = "launcher"
+    return panel
+
+
+def parse_desktop_file(path):
+    entry, main = {}, False
+    try:
+        text = Path(path).read_text(errors="replace")
+    except OSError:
+        return entry
+    for line in text.splitlines():
+        st = line.strip()
+        if st.startswith("["):
+            main = st == "[Desktop Entry]"
+        elif main and "=" in st and not st.startswith("#"):
+            k, v = st.split("=", 1)
+            entry.setdefault(k.strip(), v.strip())
+    return entry
+
+
+def launcher_items(folder):
+    d = Path(os.path.expanduser(folder or ""))
+    if not folder or not d.is_dir():
+        return []
+    items = []
+    for f in sorted(d.iterdir(), key=lambda x: x.name.lower()):
+        if f.name.startswith("."):
+            continue
+        if f.suffix == ".desktop":
+            e = parse_desktop_file(f)
+            if e.get("Hidden", "").lower() == "true" or e.get("NoDisplay", "").lower() == "true":
+                continue
+            items.append({"name": e.get("Name") or f.stem, "icon": e.get("Icon", ""), "path": str(f),
+                          "type": "desktop"})
+        elif f.is_dir():
+            items.append({"name": f.name, "icon": "folder", "path": str(f), "type": "dir"})
+        else:
+            exe = os.access(f, os.X_OK)
+            items.append({"name": f.stem if exe else f.name, "icon": "", "path": str(f),
+                          "type": "exe" if exe else "file"})
+    return items
+
+
+_count_cache = {}
+
+
+def panel_item_count(panel):
+    if panel["kind"] != "launcher":
+        return 0
+    key = panel["folder"]
+    hit = _count_cache.get(key)
+    if hit and time.time() - hit[0] < 2:
+        return hit[1]
+    n = len(launcher_items(key))
+    _count_cache[key] = (time.time(), n)
+    return n
+
+
+def desktop_exec_command(entry):
+    cmd = re.sub(r"%[fFuUdDnNickvm]", "", entry.get("Exec", ""))
+    return cmd.replace("%%", "%").strip()
+
+
+def launch_item(item):
+    path = item["path"]
+    quiet = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    if item["type"] == "desktop":
+        for tool in (["kioclient", "exec"], ["gio", "launch"]):
+            if shutil.which(tool[0]):
+                subprocess.Popen(tool + [path], **quiet)
+                return True
+        e = parse_desktop_file(path)
+        if e.get("Type") == "Link" and e.get("URL"):
+            subprocess.Popen(["xdg-open", e["URL"]], **quiet)
+            return True
+        cmd = desktop_exec_command(e)
+        if cmd:
+            subprocess.Popen(["sh", "-c", cmd], cwd=e.get("Path") or None, **quiet)
+            return True
+        return False
+    if item["type"] == "exe":
+        subprocess.Popen([path], cwd=str(Path(path).parent), **quiet)
+        return True
+    subprocess.Popen(["xdg-open", path], **quiet)
+    return True
+
+
+def panel_layout(panel, n_items=0):
+    """Rects, relative to the panel's top-left corner, for everything on a panel; plus the full size."""
+    pad, W = panel["padding"], max(120, panel["width"])
+    lay = {}
+    y = pad
+    if panel["title"].strip():
+        lay["title"] = QRectF(pad, y, W - 2 * pad, 16)
+        y += 26
+    if panel["kind"] == "launcher":
+        cols = max(1, panel["columns"])
+        cw = (W - 2 * pad) / cols
+        ch = panel["icon_size"] + (32 if panel["labels"] else 14)
+        rows = max(1, math.ceil(n_items / cols))
+        lay["items"] = [QRectF(pad + (i % cols) * cw, y + (i // cols) * ch, cw, ch) for i in range(n_items)]
+        lay["empty"] = QRectF(pad, y, W - 2 * pad, ch)
+        y += rows * ch
+    else:
+        a = max(48, panel["art_size"])
+        lay["art"] = QRectF(pad, y, a, a)
+        x = pad + a + 16
+        tw = max(40, W - pad - x)
+        ty = y + 2
+        lay["song"] = QRectF(x, ty, tw, 22)
+        ty += 22
+        lay["artist"] = QRectF(x, ty, tw, 18)
+        ty += 26
+        if panel["progress"]:
+            lay["progress"] = QRectF(x, ty, tw, 5)
+            lay["progress_hit"] = QRectF(x, ty - 6, tw, 17)
+            lay["times"] = QRectF(x, ty + 8, tw, 14)
+            ty += 28
+        if panel["controls"]:
+            bs, big = 30, 36
+            cx = x + tw / 2
+            lay["prev"] = QRectF(cx - big / 2 - 14 - bs, ty + (big - bs) / 2, bs, bs)
+            lay["play"] = QRectF(cx - big / 2, ty, big, big)
+            lay["next"] = QRectF(cx + big / 2 + 14, ty + (big - bs) / 2, bs, bs)
+            ty += big
+        y = max(y + a, ty)
+    return lay, QRectF(0, 0, W, y + pad)
+
+
+def panel_rect(panel, g, n_items=None):
+    n = panel_item_count(panel) if n_items is None else n_items
+    _lay, full = panel_layout(panel, n)
+    return align_rect(panel["alignment"], panel["gap_x"], panel["gap_y"], full.width(), full.height(), g)
+
+
+def panel_hit(panel, n_items, pos):
+    lay, _ = panel_layout(panel, n_items)
+    for i, r in enumerate(lay.get("items", [])):
+        if r.contains(pos):
+            return ("item", i)
+    for key in ("prev", "play", "next"):
+        if key in lay and lay[key].adjusted(-4, -4, 4, 4).contains(pos):
+            return (key, None)
+    if "progress_hit" in lay and lay["progress_hit"].contains(pos):
+        r = lay["progress"]
+        return ("seek", clamp((pos.x() - r.left()) / r.width()))
+    return None
+
+
+def fmt_time(sec):
+    if sec is None or sec < 0:
+        return "-:--"
+    sec = int(sec)
+    return f"{sec // 3600}:{sec // 60 % 60:02d}:{sec % 60:02d}" if sec >= 3600 else f"{sec // 60}:{sec % 60:02d}"
+
+
+def _font(size, bold=False):
+    f = QFont()
+    f.setPointSizeF(size)
+    f.setBold(bold)
+    return f
+
+
+def _draw_transport_icon(qp, kind, r, col):
+    qp.save()
+    qp.setPen(Qt.NoPen)
+    qp.setBrush(QColor(col))
+    c = r.center()
+    s = r.width() * 0.22
+    if kind in ("prev", "next"):
+        d = -1 if kind == "prev" else 1
+        tri = QPainterPath(QPointF(c.x() - d * s * 0.9, c.y() - s))
+        tri.lineTo(c.x() + d * s * 0.7, c.y())
+        tri.lineTo(c.x() - d * s * 0.9, c.y() + s)
+        tri.closeSubpath()
+        qp.drawPath(tri)
+        qp.drawRect(QRectF(c.x() + d * s * 0.7 - (s * 0.28 if d > 0 else 0), c.y() - s, s * 0.28, 2 * s))
+    elif kind == "pause":
+        qp.drawRoundedRect(QRectF(c.x() - s * 0.85, c.y() - s, s * 0.6, 2 * s), 1, 1)
+        qp.drawRoundedRect(QRectF(c.x() + s * 0.25, c.y() - s, s * 0.6, 2 * s), 1, 1)
+    else:   # play
+        tri = QPainterPath(QPointF(c.x() - s * 0.7, c.y() - s * 1.1))
+        tri.lineTo(c.x() + s * 1.1, c.y())
+        tri.lineTo(c.x() - s * 0.7, c.y() + s * 1.1)
+        tri.closeSubpath()
+        qp.drawPath(tri)
+    qp.restore()
+
+
+def paint_panel(qp, origin, panel, p, state):
+    """Draw a panel with its top-left corner at origin. state: items, icons, hover, np, art, glow."""
+    items = state.get("items", [])
+    lay, full = panel_layout(panel, len(items))
+    bg, fg, mu, ac = p["background"], p["foreground"], p["muted"], p["accent"]
+    hover = state.get("hover")
+    qp.save()
+    qp.setRenderHint(QPainter.Antialiasing)
+    qp.setRenderHint(QPainter.SmoothPixmapTransform)
+    qp.translate(origin)
+    rad = panel["radius"]
+    body = QPainterPath()
+    body.addRoundedRect(full, rad, rad)
+
+    glow = state.get("glow", 0.0) if panel["glow"] else 0.0
+    if glow > 0.02:
+        for k in range(6, 0, -1):
+            grow = k * 3
+            outer = QPainterPath()
+            outer.addRoundedRect(full.adjusted(-grow, -grow, grow, grow), rad + grow, rad + grow)
+            col = QColor(ac)
+            col.setAlphaF(clamp(glow * 0.09))
+            qp.fillPath(outer.subtracted(body), col)
+
+    back = QColor(bg)
+    back.setAlphaF(clamp(panel["opacity"] / 100))
+    qp.fillPath(body, back)
+    if panel["border"] or glow > 0.02:
+        edge = QColor(mix(bg, ac, 0.4))
+        if glow > 0.02:
+            edge = QColor(mix(mix(bg, ac, 0.4), ac, clamp(glow)))
+        qp.setPen(QPen(edge, 1.2))
+        qp.setBrush(Qt.NoBrush)
+        qp.drawPath(body)
+
+    if "title" in lay:
+        f = _font(8.5, True)
+        f.setLetterSpacing(QFont.AbsoluteSpacing, 1.2)
+        qp.setFont(f)
+        qp.setPen(QColor(ac))
+        qp.drawText(lay["title"], Qt.AlignLeft | Qt.AlignVCenter, panel["title"])
+
+    if panel["kind"] == "launcher":
+        icons = state.get("icons", {})
+        isz = panel["icon_size"]
+        if not items:
+            qp.setFont(_font(9))
+            qp.setPen(QColor(mu))
+            qp.drawText(lay["empty"], Qt.AlignCenter | Qt.TextWordWrap,
+                        f"Put game shortcuts in {panel['folder']}")
+        for i, (it, r) in enumerate(zip(items, lay["items"])):
+            if hover == ("item", i):
+                hl = QColor(ac)
+                hl.setAlphaF(0.2)
+                qp.setPen(Qt.NoPen)
+                qp.setBrush(hl)
+                qp.drawRoundedRect(r.adjusted(3, 2, -3, -2), 8, 8)
+            ic = icons.get(it["path"])
+            ir = QRectF(r.center().x() - isz / 2, r.top() + 7, isz, isz)
+            if ic is not None and not ic.isNull():
+                ic.paint(qp, ir.toRect())
+            else:
+                qp.setPen(Qt.NoPen)
+                qp.setBrush(QColor(mix(bg, ac, 0.5)))
+                qp.drawRoundedRect(ir, isz * 0.22, isz * 0.22)
+                qp.setPen(QColor(best_text(mix(bg, ac, 0.5), p)))
+                qp.setFont(_font(isz * 0.3, True))
+                qp.drawText(ir, Qt.AlignCenter, it["name"][:1].upper())
+            if panel["labels"]:
+                qp.setFont(_font(8.5))
+                qp.setPen(QColor(fg if hover == ("item", i) else mix(fg, mu, 0.35)))
+                lr = QRectF(r.left() + 3, ir.bottom() + 4, r.width() - 6, 16)
+                text = QFontMetricsF(qp.font()).elidedText(it["name"], Qt.ElideRight, lr.width())
+                qp.drawText(lr, Qt.AlignHCenter | Qt.AlignTop, text)
+    else:
+        np = state.get("np") or {}
+        art = state.get("art")
+        ar = lay["art"]
+        clip = QPainterPath()
+        clip.addRoundedRect(ar, 10, 10)
+        qp.save()
+        qp.setClipPath(clip)
+        if art is not None and not art.isNull():
+            pm = art.scaled(ar.size().toSize(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+            qp.drawPixmap(ar, pm, QRectF((pm.width() - ar.width()) / 2, (pm.height() - ar.height()) / 2,
+                                         ar.width(), ar.height()))
+        else:
+            g = QLinearGradient(ar.topLeft(), ar.bottomRight())
+            _stops(g, p["gradient"])
+            qp.fillRect(ar, g)
+            qp.setPen(QColor(best_text(p["gradient"][0], p)))
+            qp.setFont(_font(ar.height() * 0.3, True))
+            qp.drawText(ar, Qt.AlignCenter, "♪")
+        qp.restore()
+        playing = np.get("status") == "Playing"
+        title = np.get("title") or ("Nothing playing" if not np else "Unknown title")
+        qp.setFont(_font(11.5, True))
+        qp.setPen(QColor(fg))
+        fm = QFontMetricsF(qp.font())
+        qp.drawText(lay["song"], Qt.AlignLeft | Qt.AlignVCenter, fm.elidedText(title, Qt.ElideRight,
+                                                                               lay["song"].width()))
+        qp.setFont(_font(9.5))
+        qp.setPen(QColor(ac))
+        fm = QFontMetricsF(qp.font())
+        qp.drawText(lay["artist"], Qt.AlignLeft | Qt.AlignVCenter,
+                    fm.elidedText(np.get("artist") or "", Qt.ElideRight, lay["artist"].width()))
+        if "progress" in lay:
+            r = lay["progress"]
+            length, pos = np.get("length"), np.get("position")
+            frac = clamp(pos / length) if length and pos is not None else 0
+            qp.setPen(Qt.NoPen)
+            qp.setBrush(QColor(mix(bg, fg, 0.18)))
+            qp.drawRoundedRect(r, 2.5, 2.5)
+            if frac > 0:
+                g = QLinearGradient(r.topLeft(), r.topRight())
+                _stops(g, [p["accent2"], p["accent"]])
+                qp.setBrush(QBrush(g))
+                qp.drawRoundedRect(QRectF(r.left(), r.top(), max(5, r.width() * frac), r.height()), 2.5, 2.5)
+                if hover and hover[0] == "seek":
+                    qp.setBrush(QColor(fg))
+                    qp.drawEllipse(QPointF(r.left() + r.width() * frac, r.center().y()), 5, 5)
+            qp.setFont(_font(8))
+            qp.setPen(QColor(mu))
+            qp.drawText(lay["times"], Qt.AlignLeft | Qt.AlignVCenter, fmt_time(pos) if np else "")
+            qp.drawText(lay["times"], Qt.AlignRight | Qt.AlignVCenter, fmt_time(length) if np else "")
+        for key in ("prev", "play", "next"):
+            if key not in lay:
+                continue
+            r = lay[key]
+            if key == "play":
+                qp.setPen(Qt.NoPen)
+                qp.setBrush(QColor(mix(ac, fg, 0.15) if hover == ("play", None) else ac))
+                qp.drawEllipse(r)
+                _draw_transport_icon(qp, "pause" if playing else "play", r, best_text(ac, p))
+            else:
+                if hover == (key, None):
+                    hl = QColor(ac)
+                    hl.setAlphaF(0.22)
+                    qp.setPen(Qt.NoPen)
+                    qp.setBrush(hl)
+                    qp.drawEllipse(r)
+                _draw_transport_icon(qp, key, r, fg)
+    qp.restore()
+    return full
+
+
+# ── album art / now playing data ───────────────────────────────────
+
+NP_FORMAT = ("{{status}}\t{{xesam:title}}\t{{xesam:artist}}\t{{mpris:artUrl}}\t{{mpris:length}}\t"
+             "{{position}}\t{{playerName}}")
+
+
+def parse_np(out):
+    line = (out or "").strip("\n").split("\n")[0]
+    f = line.split("\t")
+    if len(f) < 6 or f[0] not in ("Playing", "Paused", "Stopped"):
+        return None
+
+    def secs(v):
+        try:
+            return int(float(v)) / 1_000_000
+        except ValueError:
+            return None
+    return {"status": f[0], "title": f[1], "artist": f[2], "art": f[3], "length": secs(f[4]),
+            "position": secs(f[5]), "player": f[6] if len(f) > 6 else ""}
+
+
+def fetch_art(url):
+    """Local path for an MPRIS art URL (file:// or http[s]://, downloads are cached)."""
+    from urllib.parse import unquote, urlparse
+    if not url:
+        return None
+    if url.startswith("file://"):
+        path = Path(unquote(urlparse(url).path))
+        return path if path.is_file() else None
+    if url.startswith("/"):
+        return Path(url) if Path(url).is_file() else None
+    if not url.startswith(("http://", "https://")):
+        return None
+    ART_CACHE.mkdir(parents=True, exist_ok=True)
+    f = ART_CACHE / hashlib.sha1(url.encode()).hexdigest()
+    if not f.exists():
+        data = _http_get(url, timeout=10, limit=12 * 1024 * 1024)
+        tmp = f.with_suffix(".part")
+        tmp.write_bytes(data)
+        tmp.replace(f)
+        old = sorted(ART_CACHE.iterdir(), key=lambda x: x.stat().st_mtime)
+        for stale in old[:-150]:
+            stale.unlink(missing_ok=True)
+    return f
+
+
+class AudioFeed(QObject):
+    """Runs cava in raw mode and emits each frame as a list of 0..1 values."""
+    frame = Signal(list)
+
+    def __init__(self, key, parent=None):
+        super().__init__(parent)
+        self.cfg = VIS_DIR / f"{key}.cava"
+        self.conf = None
+        self.buf = b""
+        self.proc = QProcess(self)
+        self.proc.readyReadStandardOutput.connect(self._read)
+        self.proc.finished.connect(lambda *_: QTimer.singleShot(2000, self._start))
+
+    def configure(self, bars, framerate=60, smoothing=77, stereo=False):
+        conf = (bars, framerate, smoothing, stereo)
+        if conf == self.conf:
+            return
+        self.conf = conf
+        VIS_DIR.mkdir(parents=True, exist_ok=True)
+        self.cfg.write_text(cava_raw_config({"bars": bars, "framerate": framerate, "smoothing": smoothing,
+                                             "stereo": stereo}))
+        self.stop()
+        self._start()
+
+    def _start(self):
+        if self.conf and self.proc.state() == QProcess.NotRunning and shutil.which("cava"):
+            self.buf = b""
+            self.proc.start("cava", ["-p", str(self.cfg)])
+
+    def _read(self):
+        self.buf += bytes(self.proc.readAllStandardOutput())
+        if b"\n" not in self.buf:
+            return
+        *lines, self.buf = self.buf.split(b"\n")
+        vals = parse_cava_frame(lines[-1].decode(errors="ignore"))
+        if vals is not None:
+            self.frame.emit(vals)
+
+    def stop(self):
+        if self.proc.state() != QProcess.NotRunning:
+            self.proc.blockSignals(True)
+            self.proc.kill()
+            self.proc.waitForFinished(1000)
+            self.proc.blockSignals(False)
+
+
+# ── visualizers ────────────────────────────────────────────────────
+
 VIS_STYLES = [("bars", "Bars"), ("mirror", "Mirrored bars"), ("blocks", "LED blocks"),
-              ("wave", "Wave"), ("mirrorwave", "Mirrored wave"), ("radial", "Radial ring")]
+              ("wave", "Wave"), ("mirrorwave", "Mirrored wave"), ("radial", "Radial ring"),
+              ("frame", "Frame (around a panel)")]
 VIS_COLORS = [("gradient", "Palette gradient"), ("accent", "Accent"), ("accent2", "Second accent"),
               ("foreground", "Text"), ("red", "Red"), ("green", "Green"), ("yellow", "Yellow"),
               ("blue", "Blue"), ("magenta", "Magenta"), ("cyan", "Cyan")]
 VIS_TEMPLATES = [("bottom", "Bars along the bottom"), ("center", "Mirrored bars, centered"),
                  ("radial", "Radial ring"), ("wave", "Wave"), ("mirrorwave", "Mirrored wave"),
-                 ("led", "LED meter")]
+                 ("led", "LED meter"), ("frame", "Frame around a panel")]
 
 
 def vis_template(kind="bottom"):
     v = {"id": uuid.uuid4().hex[:8], "name": "Visualizer", "style": "bars", "bars": 64, "gap": 25,
          "rounded": True, "stereo": False, "flip": False, "color": "gradient", "opacity": 90,
          "smoothing": 77, "framerate": 60, "alignment": "bottom_middle", "gap_x": 0, "gap_y": 0,
-         "width": 0, "height": 160, "screen": "", "x11": True, "autostart": False}
+         "width": 0, "height": 160, "screen": "", "x11": True, "autostart": False,
+         "glow": False, "wrap": "", "depth": 36}
     presets = {
         "bottom": dict(name="Bottom bars", bars=96, gap=30, height=150, opacity=85),
         "center": dict(name="Center bars", style="mirror", bars=72, width=1100, height=260,
                        alignment="middle_middle", stereo=True),
         "radial": dict(name="Radial ring", style="radial", bars=96, gap=35, width=440, height=440,
-                       alignment="middle_right", gap_x=120, stereo=True),
+                       alignment="middle_right", gap_x=120, stereo=True, glow=True),
         "wave": dict(name="Wave", style="wave", bars=48, height=200, opacity=80),
         "mirrorwave": dict(name="Mirrored wave", style="mirrorwave", bars=48, width=1000, height=180,
                            alignment="top_middle", gap_y=80, stereo=True),
         "led": dict(name="LED meter", style="blocks", bars=24, gap=28, width=480, height=170,
                     alignment="bottom_left", gap_x=40, gap_y=60, rounded=False),
+        "frame": dict(name="Panel frame", style="frame", bars=120, gap=40, depth=30, stereo=True, glow=True,
+                      width=480, height=300, alignment="middle_middle"),
     }
     v.update(presets.get(kind, {}))
     return v
@@ -831,17 +1599,31 @@ def fake_spectrum(n, t, stereo=False):
     return (vals[::-1] + vals)[:n] if stereo else vals
 
 
-def vis_geometry(v, g):
-    """Where visualizer v sits inside screen rect g (QRectF)."""
+def bass_level(vals, stereo=False):
+    n = len(vals)
+    if not n:
+        return 0.0
+    k = max(1, n // 10)
+    half = max(1, k // 2)
+    part = vals[n // 2 - half: n // 2 + half] if stereo else vals[:k]
+    return sum(part) / max(1, len(part))
+
+
+def wrapped_panel(v, panels):
+    if not v.get("wrap"):
+        return None
+    return next((normalize_panel(dict(x)) for x in panels or [] if x.get("id") == v["wrap"]), None)
+
+
+def vis_geometry(v, g, panels=None):
+    """Where visualizer v sits inside screen rect g (QRectF). A frame wrapped around a panel hugs it."""
+    panel = wrapped_panel(v, panels)
+    if panel is not None:
+        d = v["depth"] + 4
+        return panel_rect(panel, g).adjusted(-d, -d, d, d)
     W = g.width() if v["width"] <= 0 else min(v["width"], g.width())
     H = min(v["height"], g.height())
-    vert, horiz = v["alignment"].split("_")
-    gx, gy = v["gap_x"], v["gap_y"]
-    x = {"left": g.left() + gx, "middle": g.left() + (g.width() - W) / 2 + gx,
-         "right": g.left() + g.width() - W - gx}[horiz]
-    y = {"top": g.top() + gy, "middle": g.top() + (g.height() - H) / 2 + gy,
-         "bottom": g.top() + g.height() - H - gy}[vert]
-    return QRectF(x, y, W, H)
+    return align_rect(v["alignment"], v["gap_x"], v["gap_y"], W, H, g)
 
 
 def _stops(grad, cols, start=0.0):
@@ -861,41 +1643,54 @@ def _smooth_path(pts):
     return path
 
 
-def paint_visualizer(qp, rect, vals, v, p):
+def _perimeter_point(inner, s):
+    """Point and outward angle at distance s clockwise from the top-left corner of a rectangle."""
+    W, H = inner.width(), inner.height()
+    s %= 2 * (W + H)
+    if s < W:
+        return QPointF(inner.left() + s, inner.top()), -90
+    if s < W + H:
+        return QPointF(inner.right(), inner.top() + s - W), 0
+    if s < 2 * W + H:
+        return QPointF(inner.right() - (s - W - H), inner.bottom()), 90
+    return QPointF(inner.left(), inner.bottom() - (s - 2 * W - H)), 180
+
+
+def _draw_vis(qp, rect, vals, v, cols, grow=0.0):
     n = len(vals)
-    if not n or rect.width() < 4 or rect.height() < 4:
-        return
-    cols = list(p["gradient"]) if v["color"] == "gradient" else [role_color(p, v["color"])]
     style, flip = v["style"], v["flip"]
+    if v.get("wrap"):
+        style = "frame"
     L, T, W, H = rect.left(), rect.top(), rect.width(), rect.height()
     slot = W / n
     bw = max(1.0, slot * (1 - v["gap"] / 100))
-    base_op = clamp(v["opacity"] / 100)
-    qp.save()
-    qp.setRenderHint(QPainter.Antialiasing)
-    qp.setOpacity(base_op)
+    op = qp.opacity()
     qp.setPen(Qt.NoPen)
 
     def box(r, rad):
+        r = r.adjusted(-grow, -grow, grow, grow)
+        rad = rad + grow if rad > 0.5 else 0
         if rad > 0.5:
             qp.drawRoundedRect(r, rad, rad)
         else:
             qp.drawRect(r)
 
     if style == "radial":
+        qp.save()
         cx, cy = rect.center().x(), rect.center().y()
         R = min(W, H) / 2
         r0 = R * 0.42
-        lmax = R - r0 - 2
+        lmax = R - r0 - 2 - grow
         grad = QRadialGradient(QPointF(0, 0), R)
         _stops(grad, cols, start=r0 / R)
         qp.translate(cx, cy)
-        qp.setOpacity(base_op * 0.45)
-        qp.setPen(QPen(QColor(cols[0]), 1.5))
-        qp.setBrush(Qt.NoBrush)
-        qp.drawEllipse(QPointF(0, 0), r0 - 5, r0 - 5)
-        qp.setOpacity(base_op)
-        qp.setPen(Qt.NoPen)
+        if not grow:
+            qp.setOpacity(op * 0.45)
+            qp.setPen(QPen(QColor(cols[0]), 1.5))
+            qp.setBrush(Qt.NoBrush)
+            qp.drawEllipse(QPointF(0, 0), r0 - 5, r0 - 5)
+            qp.setOpacity(op)
+            qp.setPen(Qt.NoPen)
         qp.setBrush(QBrush(grad))
         t = max(1.0, 2 * math.pi * r0 / n * (1 - v["gap"] / 100))
         for i, val in enumerate(vals):
@@ -904,6 +1699,27 @@ def paint_visualizer(qp, rect, vals, v, p):
             box(QRectF(r0, -t / 2, max(1.5, val * lmax), t), t / 2 if v["rounded"] else 0)
             qp.restore()
         qp.restore()
+        return
+
+    if style == "frame":
+        d = v["depth"]
+        inner = rect.adjusted(d + 4, d + 4, -(d + 4), -(d + 4))
+        if inner.width() < 8 or inner.height() < 8:
+            inner = rect.adjusted(W * 0.2, H * 0.2, -W * 0.2, -H * 0.2)
+            d = min(W, H) * 0.18
+        per = 2 * (inner.width() + inner.height())
+        step = per / n
+        t = max(1.0, step * (1 - v["gap"] / 100))
+        grad = QLinearGradient(QPointF(0, 0), QPointF(d, 0))
+        _stops(grad, cols)
+        qp.setBrush(QBrush(grad))
+        for i, val in enumerate(vals):
+            pt, ang = _perimeter_point(inner, (i + 0.5) * step)
+            qp.save()
+            qp.translate(pt)
+            qp.rotate(ang)
+            box(QRectF(2, -t / 2, max(1.5, val * d), t), t / 2 if v["rounded"] else 0)
+            qp.restore()
         return
 
     if style in ("mirror", "mirrorwave"):
@@ -943,15 +1759,16 @@ def paint_visualizer(qp, rect, vals, v, p):
                for i, val in enumerate(vals)]
         pts = [QPointF(L, pts[0].y())] + pts + [QPointF(L + W, pts[-1].y())]
         line = _smooth_path(pts)
-        fill = QPainterPath(line)
-        fill.lineTo(L + W, edge)
-        fill.lineTo(L, edge)
-        fill.closeSubpath()
-        qp.setOpacity(base_op * 0.65)
-        qp.drawPath(fill)
-        qp.setOpacity(base_op)
+        if not grow:
+            fill = QPainterPath(line)
+            fill.lineTo(L + W, edge)
+            fill.lineTo(L, edge)
+            fill.closeSubpath()
+            qp.setOpacity(op * 0.65)
+            qp.drawPath(fill)
+            qp.setOpacity(op)
         qp.setBrush(Qt.NoBrush)
-        qp.setPen(QPen(QColor(cols[-1]), 2.2))
+        qp.setPen(QPen(QColor(cols[-1]), 2.2 + grow * 2))
         qp.drawPath(line)
     elif style == "mirrorwave":
         top = [QPointF(L + (i + 0.5) * slot, cy - val * H / 2) for i, val in enumerate(vals)]
@@ -959,132 +1776,102 @@ def paint_visualizer(qp, rect, vals, v, p):
         bottom = [QPointF(pt.x(), 2 * cy - pt.y()) for pt in reversed(top)]
         shape = _smooth_path(top + bottom[1:])
         shape.closeSubpath()
-        qp.setOpacity(base_op * 0.6)
-        qp.drawPath(shape)
-        qp.setOpacity(base_op)
+        if not grow:
+            qp.setOpacity(op * 0.6)
+            qp.drawPath(shape)
+            qp.setOpacity(op)
         qp.setBrush(Qt.NoBrush)
-        qp.setPen(QPen(QColor(cols[-1]), 1.8))
+        qp.setPen(QPen(QColor(cols[-1]), 1.8 + grow * 2))
         qp.drawPath(shape)
+
+
+def paint_visualizer(qp, rect, vals, v, p):
+    n = len(vals)
+    if not n or rect.width() < 4 or rect.height() < 4:
+        return
+    cols = list(p["gradient"]) if v["color"] == "gradient" else [role_color(p, v["color"])]
+    base_op = clamp(v["opacity"] / 100)
+    qp.save()
+    qp.setRenderHint(QPainter.Antialiasing)
+    if v.get("glow"):
+        bass = bass_level(vals, v["stereo"])
+        for grow, strength in ((7, 0.10), (4, 0.16), (2, 0.22)):
+            qp.setOpacity(base_op * strength * (0.3 + 1.2 * bass))
+            _draw_vis(qp, rect, vals, v, cols, grow)
+    qp.setOpacity(base_op)
+    _draw_vis(qp, rect, vals, v, cols, 0)
     qp.restore()
 
 
-def vis_pids(vid=None):
-    try:
-        out = subprocess.run(["pgrep", "-af", "themeforge"], capture_output=True, text=True, timeout=5).stdout
-    except (FileNotFoundError, subprocess.SubprocessError):
-        return []
-    pids = []
-    for line in out.splitlines():
-        parts = line.split()
-        if "--visualizer" in parts:
-            i = parts.index("--visualizer")
-            if i + 1 < len(parts) and (vid is None or parts[i + 1] == vid):
-                pids.append(int(parts[0]))
-    return [pid for pid in pids if pid != os.getpid()]
+class DesktopWindow(QWidget):
+    """Base for ThemeForge's own desktop windows: frameless, kept below other windows,
+    reloads itself when the settings or the live palette change."""
 
-
-def start_visualizer(v):
-    if not shutil.which("cava"):
-        return False
-    VIS_DIR.mkdir(parents=True, exist_ok=True)
-    env = os.environ.copy()
-    if v.get("x11", True):
-        env["QT_QPA_PLATFORM"] = "xcb"      # XWayland lets the window place itself
-    log = open(VIS_DIR / f"{v['id']}.log", "w")
-    subprocess.Popen([sys.executable, str(SCRIPT), "--visualizer", v["id"]], env=env,
-                     stdout=log, stderr=log, start_new_session=True)
-    log.close()
-    return True
-
-
-def stop_visualizer(vid):
-    for pid in vis_pids(vid):
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-
-
-class VisualizerWindow(QWidget):
-    """Frameless, click-through desktop window that draws cava's output."""
-
-    def __init__(self, vid):
+    def __init__(self, item_id, click_through):
         super().__init__()
-        self.vid = vid
-        self.vals = []
-        self.v = None
-        self.pal = None
-        self.mtime = 0
-        self.cava_key = None
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnBottomHint
-                            | Qt.WindowTransparentForInput | Qt.WindowDoesNotAcceptFocus)
+        self.item_id = item_id
+        flags = (Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnBottomHint | Qt.WindowDoesNotAcceptFocus)
+        if click_through:
+            flags |= Qt.WindowTransparentForInput
+        self.setWindowFlags(flags)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
-        self.setWindowTitle(f"themeforge-vis-{vid}")
-        self.proc = QProcess(self)
-        self.proc.readyReadStandardOutput.connect(self.on_data)
-        self.proc.finished.connect(lambda *_: QTimer.singleShot(2000, self.start_cava))
-        self.buf = b""
-        if not self.reload():
-            raise SystemExit(f"No visualizer with id {vid}")
+        self.stamp = None
+        self.settings = None
+        self.pal = None
         self.poll = QTimer(self)
         self.poll.setInterval(500)
-        self.poll.timeout.connect(self.reload)
-        self.poll.start()
+        self.poll.timeout.connect(self.check_reload)
 
-    def reload(self):
-        try:
-            mtime = SETTINGS_FILE.stat().st_mtime
-        except FileNotFoundError:
-            return False
-        if mtime == self.mtime:
+    def check_reload(self):
+        stamp = (_mtime(SETTINGS_FILE), _mtime(LIVE_PALETTE_FILE))
+        if stamp == self.stamp:
             return True
-        self.mtime = mtime
-        s = load_settings()
-        v = next((normalize_vis(x) for x in s.get("visualizers", []) if x.get("id") == self.vid), None)
-        if v is None:
+        self.stamp = stamp
+        self.settings = load_settings()
+        self.pal = read_live_palette(self.settings["palette"])
+        if not self.reload():
             QApplication.quit()
             return False
-        self.v = v
-        self.pal = s.get("visualizers_palette") or s["palette"]
-        key = (vis_bar_count(v), v["smoothing"], v["stereo"], v["framerate"])
-        if key != self.cava_key:
-            self.cava_key = key
-            VIS_DIR.mkdir(parents=True, exist_ok=True)
-            (VIS_DIR / f"{self.vid}.cava").write_text(cava_raw_config(v))
-            self.restart_cava()
-        self.place()
         self.update()
         return True
 
-    def place(self):
-        screens = QGuiApplication.screens()
-        scr = next((s for s in screens if s.name() == self.v["screen"]), QGuiApplication.primaryScreen())
-        r = vis_geometry(self.v, QRectF(scr.availableGeometry())).toRect()
-        self.setGeometry(r)
+    def reload(self):
+        return True
 
-    def restart_cava(self):
-        if self.proc.state() != QProcess.NotRunning:
-            self.proc.blockSignals(True)
-            self.proc.kill()
-            self.proc.waitForFinished(1000)
-            self.proc.blockSignals(False)
-        self.start_cava()
+    def shutdown(self):
+        pass
 
-    def start_cava(self):
-        if self.proc.state() == QProcess.NotRunning:
-            self.buf = b""
-            self.proc.start("cava", ["-p", str(VIS_DIR / f"{self.vid}.cava")])
 
-    def on_data(self):
-        self.buf += bytes(self.proc.readAllStandardOutput())
-        if b"\n" not in self.buf:
-            return
-        *lines, self.buf = self.buf.split(b"\n")
-        vals = parse_cava_frame(lines[-1].decode(errors="ignore"))
-        if vals is not None:
-            self.vals = vals
-            self.update()
+class VisualizerWindow(DesktopWindow):
+    """Click-through desktop window that draws cava's output."""
+
+    def __init__(self, vid):
+        super().__init__(vid, click_through=True)
+        self.setWindowTitle(f"themeforge-vis-{vid}")
+        self.vals = []
+        self.v = None
+        self.feed = AudioFeed(vid, self)
+        self.feed.frame.connect(self.on_frame)
+        if not self.check_reload():
+            raise SystemExit(f"No visualizer with id {vid}")
+        self.poll.start()
+
+    def reload(self):
+        v = next((normalize_vis(x) for x in self.settings.get("visualizers", []) if x.get("id") == self.item_id),
+                 None)
+        if v is None:
+            return False
+        self.v = v
+        self.feed.configure(vis_bar_count(v), v["framerate"], v["smoothing"], v["stereo"])
+        panel = wrapped_panel(v, self.settings.get("panels"))
+        scr = screen_for(panel["screen"] if panel else v["screen"])
+        self.setGeometry(vis_geometry(v, QRectF(scr.availableGeometry()), self.settings.get("panels")).toRect())
+        return True
+
+    def on_frame(self, vals):
+        self.vals = vals
+        self.update()
 
     def paintEvent(self, e):
         if not self.v or not self.vals:
@@ -1094,17 +1881,218 @@ class VisualizerWindow(QWidget):
         qp.end()
 
     def shutdown(self):
-        self.proc.blockSignals(True)
-        self.proc.kill()
-        self.proc.waitForFinished(1000)
+        self.feed.stop()
 
 
-def run_visualizer(vid):
-    if vis_pids(vid):
+class PanelWindow(DesktopWindow):
+    """Clickable desktop panel: a games launcher or a now playing card."""
+    art_ready = Signal(str, object)
+
+    def __init__(self, pid):
+        super().__init__(pid, click_through=False)
+        self.setWindowTitle(f"themeforge-panel-{pid}")
+        self.setMouseTracking(True)
+        self.panel = None
+        self.items = []
+        self.icons = {}
+        self.hover = None
+        self.np = None
+        self.np_at = 0.0
+        self.art_url = None
+        self.art = None
+        self.glow = 0.0
+        self.watcher = QFileSystemWatcher(self)
+        self.watcher.directoryChanged.connect(lambda *_: self.load_items())
+        self.feed = AudioFeed(f"panel-{pid}", self)
+        self.feed.frame.connect(self.on_frame)
+        self.np_proc = QProcess(self)
+        self.np_proc.finished.connect(self.on_np)
+        self.np_timer = QTimer(self)
+        self.np_timer.setInterval(1000)
+        self.np_timer.timeout.connect(self.poll_np)
+        self.tick = QTimer(self)
+        self.tick.setInterval(250)
+        self.tick.timeout.connect(self.update)
+        self.art_ready.connect(self.on_art)
+        if not self.check_reload():
+            raise SystemExit(f"No panel with id {pid}")
+        self.poll.start()
+
+    # ── settings
+    def reload(self):
+        panel = next((normalize_panel(x) for x in self.settings.get("panels", []) if x.get("id") == self.item_id),
+                     None)
+        if panel is None:
+            return False
+        old = self.panel
+        self.panel = panel
+        if panel["kind"] == "launcher":
+            if not old or old["folder"] != panel["folder"]:
+                self.load_items()
+            self.np_timer.stop()
+            self.tick.stop()
+        else:
+            self.items = []
+            if not self.np_timer.isActive():
+                self.np_timer.start()
+                self.poll_np()
+                self.tick.start()
+        if panel["glow"]:
+            self.feed.configure(12, 30, 70, False)
+        else:
+            self.feed.stop()
+            self.feed.conf = None
+            self.glow = 0.0
+        self.place()
+        return True
+
+    def place(self):
+        scr = screen_for(self.panel["screen"])
+        r = panel_rect(self.panel, QRectF(scr.availableGeometry()), len(self.items))
+        m = GLOW_MARGIN
+        self.setGeometry(r.adjusted(-m, -m, m, m).toRect())
+
+    # ── launcher
+    def load_items(self):
+        folder = Path(os.path.expanduser(self.panel["folder"]))
+        if self.watcher.directories():
+            self.watcher.removePaths(self.watcher.directories())
+        if folder.is_dir():
+            self.watcher.addPath(str(folder))
+        self.items = launcher_items(self.panel["folder"])
+        self.icons = {it["path"]: icon_for_item(it) for it in self.items}
+        if self.panel:
+            self.place()
+        self.update()
+
+    # ── now playing
+    def poll_np(self):
+        if self.np_proc.state() == QProcess.NotRunning and shutil.which("playerctl"):
+            self.np_proc.start("playerctl", ["metadata", "--format", NP_FORMAT])
+
+    def on_np(self, *_):
+        out = bytes(self.np_proc.readAllStandardOutput()).decode(errors="ignore")
+        self.np = parse_np(out)
+        self.np_at = time.monotonic()
+        url = (self.np or {}).get("art") or ""
+        if url != self.art_url:
+            self.art_url = url
+            self.art = None
+            if url:
+                def work(u=url):
+                    try:
+                        path = fetch_art(u)
+                    except Exception:
+                        path = None
+                    self.art_ready.emit(u, str(path) if path else "")
+                threading.Thread(target=work, daemon=True).start()
+        self.update()
+
+    def on_art(self, url, path):
+        if url == self.art_url:
+            self.art = QPixmap(path) if path else None
+            self.update()
+
+    def live_np(self):
+        if not self.np:
+            return None
+        np = dict(self.np)
+        if np["status"] == "Playing" and np.get("position") is not None:
+            np["position"] = np["position"] + (time.monotonic() - self.np_at)
+            if np.get("length"):
+                np["position"] = min(np["position"], np["length"])
+        return np
+
+    # ── audio glow
+    def on_frame(self, vals):
+        target = clamp(bass_level(vals) * 1.4)
+        self.glow = self.glow * 0.6 + target * 0.4
+        self.update()
+
+    # ── drawing / input
+    def paintEvent(self, e):
+        if not self.panel:
+            return
+        qp = QPainter(self)
+        paint_panel(qp, QPointF(GLOW_MARGIN, GLOW_MARGIN), self.panel, self.pal,
+                    {"items": self.items, "icons": self.icons, "hover": self.hover, "np": self.live_np(),
+                     "art": self.art, "glow": self.glow})
+        qp.end()
+
+    def hit(self, pos):
+        return panel_hit(self.panel, len(self.items), QPointF(pos.x() - GLOW_MARGIN, pos.y() - GLOW_MARGIN))
+
+    def mouseMoveEvent(self, e):
+        h = self.hit(e.position())
+        if h != self.hover:
+            self.hover = h
+            self.setCursor(Qt.PointingHandCursor if h else Qt.ArrowCursor)
+            if h and h[0] == "item":
+                self.setToolTip(self.items[h[1]]["name"])
+            else:
+                self.setToolTip("")
+            self.update()
+
+    def leaveEvent(self, e):
+        self.hover = None
+        self.update()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.RightButton:
+            self.context_menu(e.globalPosition().toPoint())
+            return
+        if e.button() != Qt.LeftButton:
+            return
+        h = self.hit(e.position())
+        if not h:
+            return
+        kind, arg = h
+        if kind == "item":
+            launch_item(self.items[arg])
+        elif kind in ("prev", "play", "next"):
+            QProcess.startDetached("playerctl", [{"prev": "previous", "play": "play-pause", "next": "next"}[kind]])
+            QTimer.singleShot(250, self.poll_np)
+        elif kind == "seek" and self.np and self.np.get("length"):
+            QProcess.startDetached("playerctl", ["position", f"{arg * self.np['length']:.1f}"])
+            QTimer.singleShot(250, self.poll_np)
+
+    def context_menu(self, pos):
+        m = QMenu(self)
+        if self.panel["kind"] == "launcher":
+            folder = Path(os.path.expanduser(self.panel["folder"]))
+            m.addAction("Open games folder").triggered.connect(
+                lambda: (folder.mkdir(parents=True, exist_ok=True),
+                         QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))))
+            m.addAction("Refresh").triggered.connect(self.load_items)
+        m.addAction("Edit in ThemeForge").triggered.connect(
+            lambda: subprocess.Popen([sys.executable, str(SCRIPT)], start_new_session=True))
+        m.addSeparator()
+        m.addAction("Close this panel").triggered.connect(QApplication.quit)
+        m.exec(pos)
+
+    def shutdown(self):
+        self.feed.stop()
+
+
+def icon_for_item(it):
+    ic = QIcon()
+    name = it.get("icon") or ""
+    if name.startswith("/") and Path(name).exists():
+        ic = QIcon(name)
+    elif name:
+        ic = QIcon.fromTheme(name)
+    if ic.isNull() and it["type"] != "desktop":
+        ic = QFileIconProvider().icon(QFileInfo(it["path"]))
+    return ic          # a null icon makes the panel draw a lettered tile in the accent color
+
+
+def run_desktop_window(cls, item_id, flag):
+    if tf_pids(flag, item_id):
         return          # already running
     app = QApplication(sys.argv[:1])
-    app.setApplicationName("ThemeForge visualizer")
-    win = VisualizerWindow(vid)
+    app.setApplicationName("ThemeForge")
+    app.setQuitOnLastWindowClosed(False)
+    win = cls(item_id)
     app.aboutToQuit.connect(win.shutdown)
     signal.signal(signal.SIGTERM, lambda *_: app.quit())
     signal.signal(signal.SIGINT, lambda *_: app.quit())
@@ -1126,6 +2114,26 @@ def parse_version(v):
 
 def is_git_checkout():
     return (SCRIPT.parent / ".git").exists()
+
+
+def is_system_install():
+    """Installed by dnf/rpm (e.g. from COPR) - the package manager does the updating."""
+    return str(SCRIPT).startswith(("/usr/", "/opt/"))
+
+
+COMMUNITY_INDEX_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/themes/index.json"
+
+
+def fetch_community_themes():
+    data = json.loads(_http_get(COMMUNITY_INDEX_URL))
+    out = []
+    for t in data.get("themes", []):
+        p = t.get("palette", {})
+        if valid_palette(p):
+            p["name"] = t.get("name") or p.get("name") or "Community theme"
+            out.append({"name": p["name"], "author": t.get("author", ""),
+                        "description": t.get("description", ""), "palette": p})
+    return out
 
 
 def _http_get(url, timeout=15, limit=8 * 1024 * 1024):
@@ -1167,6 +2175,8 @@ def check_for_update():
 def install_update(rel):
     if is_git_checkout():
         raise RuntimeError("this copy is a git checkout - update it with `git pull` instead")
+    if is_system_install():
+        raise RuntimeError("ThemeForge was installed with dnf - update it with `sudo dnf upgrade themeforge`")
     data = _http_get(rel["script"])
     if rel.get("sha256"):
         expected = _http_get(rel["sha256"]).decode().split()[0].lower()
@@ -1308,8 +2318,11 @@ def kde_colors(p, scheme):
     return "\n".join(parts)
 
 
+KDEGLOBALS = HOME / ".config" / "kdeglobals"
+
+
 def apply_kde(p, s, log):
-    current = ini_get(HOME / ".config" / "kdeglobals", "General", "ColorScheme")
+    current = ini_get(KDEGLOBALS, "General", "ColorScheme")
     if current and not current.startswith("ThemeForge") and not s.get("kde_original_scheme"):
         s["kde_original_scheme"] = current
     # Plasma ignores re-applying the scheme that's already active, so alternate between two names
@@ -1319,6 +2332,13 @@ def apply_kde(p, s, log):
     (d / f"{name}.colors").write_text(kde_colors(p, name))
     ok = run_cmd(["plasma-apply-colorscheme", name], log)
     log(("✓" if ok else "✗") + " KDE Plasma - color scheme " + ("applied" if ok else "written but not applied"))
+    if ok and s.get("kde_accent", True):
+        if "kde_original_accent" not in s:
+            s["kde_original_accent"] = ini_get(KDEGLOBALS, "General", "AccentColor") or ""
+        if run_cmd(["plasma-apply-colorscheme", "--accent-color", p["accent"]], lambda *_: None):
+            log(f"   accent color set to {p['accent']}")
+        else:
+            log("   ! couldn't set the accent color (System Settings → Colors → Accent)")
 
 
 def konsole_scheme(p):
@@ -1371,11 +2391,12 @@ def apply_widgets(p, s, log):
     log(f"✓ Widgets - {len(s['widgets'])} regenerated, {running} running one(s) update live")
 
 
-def apply_visualizers(p, s, log):
-    # running visualizers watch the settings file and pick this palette up within a second
-    s["visualizers_palette"] = copy.deepcopy(p)
-    running = sum(bool(vis_pids(v["id"])) for v in s.get("visualizers", []))
-    log(f"✓ Visualizers - new colors handed to {running} running visualizer(s)")
+def apply_live(p, s, log):
+    # running visualizers and panels watch this file and switch colors within a second
+    write_live_palette(p)
+    n = sum(bool(vis_pids(v["id"])) for v in s.get("visualizers", []))
+    n += sum(bool(panel_pids(x["id"])) for x in s.get("panels", []))
+    log(f"✓ Visualizers & panels - new colors handed to {n} running window(s)")
 
 
 CONKY_KEYMAP = [("default_color", "foreground"), ("own_window_colour", "background"),
@@ -1424,6 +2445,353 @@ def apply_wallpaper(p, s, log):
     log(("✓" if ok else "✗") + f" Wallpaper - {Path(wp).name}")
 
 
+# ── icons ──────────────────────────────────────────────────────────
+
+ICON_DIRS = [HOME / ".local" / "share" / "icons", HOME / ".icons", Path("/usr/share/icons")]
+PAPIRUS_COLORS = {
+    "black": "#4f4f4f", "blue": "#5294e2", "bluegrey": "#607d8b", "brown": "#ae8e6c", "carmine": "#a30002",
+    "cyan": "#00bcd4", "darkcyan": "#45abb7", "deeporange": "#eb6637", "green": "#87b158", "grey": "#8e8e8e",
+    "indigo": "#5c6bc0", "magenta": "#ca71df", "nordic": "#81a1c1", "orange": "#ee923a", "palebrown": "#d1bfae",
+    "paleorange": "#eeca8f", "pink": "#f06292", "red": "#e25252", "teal": "#16a085", "violet": "#7e57c2",
+    "white": "#e4e4e4", "yellow": "#f9bd30"}
+
+
+def installed_icon_themes():
+    """{name: directory} of icon themes that contain actual icons (not cursor-only)."""
+    found = {}
+    for base in ICON_DIRS:
+        if not base.is_dir():
+            continue
+        for d in sorted(base.iterdir()):
+            idx = d / "index.theme"
+            if d.name in found or not idx.is_file():
+                continue
+            try:
+                txt = idx.read_text(errors="replace")
+            except OSError:
+                continue
+            if re.search(r"^Directories\s*=\s*\S", txt, re.M) and not re.search(r"^Hidden\s*=\s*true", txt, re.M | re.I):
+                found[d.name] = d
+    return found
+
+
+PAPIRUS_NEUTRAL = ("black", "grey", "white")
+
+
+def nearest_papirus_color(h):
+    H, L, S = to_hls(h)
+    if S < 0.18 or L > 0.92 or L < 0.1:            # greyish accent → pick by lightness among neutrals
+        return min(PAPIRUS_NEUTRAL, key=lambda k: abs(to_hls(PAPIRUS_COLORS[k])[1] - L))
+
+    def dist(k):
+        h2, l2, s2 = to_hls(PAPIRUS_COLORS[k])
+        return hue_dist(H, h2) * 4 + abs(L - l2) * 0.5 + abs(S - s2) * 0.3
+    return min((k for k in PAPIRUS_COLORS if k not in PAPIRUS_NEUTRAL), key=dist)
+
+
+def find_plasma_changeicons():
+    for c in (shutil.which("plasma-changeicons"), "/usr/libexec/plasma-changeicons",
+              "/usr/lib64/libexec/plasma-changeicons", "/usr/lib/libexec/plasma-changeicons",
+              "/usr/lib/x86_64-linux-gnu/libexec/plasma-changeicons"):
+        if c and os.access(c, os.X_OK):
+            return c
+    return None
+
+
+def apply_icons(p, s, log):
+    themes = installed_icon_themes()
+    want = s.get("icon_theme") or ""
+    current = ini_get(KDEGLOBALS, "Icons", "Theme") or "breeze"
+    if want and want not in themes:
+        log(f"   ! icon theme “{want}” isn't installed")
+        want = ""
+    if want and want != current:
+        s.setdefault("icon_original_theme", current)
+        tool = find_plasma_changeicons()
+        if tool:
+            run_cmd([tool, want], log)
+        else:
+            ini_set(KDEGLOBALS, "Icons", "Theme", want)
+            run_cmd(["dbus-send", "--session", "--type=signal", "/KIconLoader",
+                     "org.kde.KIconLoader.iconChanged", "int32:0"], lambda *_: None)
+        log(f"   icon theme → {want}")
+        current = want
+    theme = want or current
+    msg = f"✓ Icons - using {theme}"
+    if s.get("papirus_folders", True) and theme.lower().startswith("papirus") and shutil.which("papirus-folders"):
+        color = nearest_papirus_color(p["accent"])
+        if s.get("papirus_color_applied") != f"{theme}:{color}":
+            cmd = ["papirus-folders", "-C", color, "--theme", theme]
+            tdir = themes.get(theme)
+            if tdir and not os.access(tdir, os.W_OK):
+                cmd = ["pkexec"] + cmd       # system-wide Papirus needs root; Plasma shows a password prompt
+            if run_cmd(cmd, log):
+                s["papirus_color_applied"] = f"{theme}:{color}"
+                msg += f", folders recolored {color}"
+            else:
+                msg += " (folder color not changed)"
+        else:
+            msg += f", folders already {color}"
+    log(msg)
+
+
+# ── apps ───────────────────────────────────────────────────────────
+
+def _rgba(h, a):
+    r, g, b = hex_to_rgb(h)
+    return f"rgba({r}, {g}, {b}, {a})"
+
+
+def discord_css(p):
+    bg, sf, fg, mu, ac, ac2 = (p[k] for k in ("background", "surface", "foreground", "muted", "accent", "accent2"))
+    dark = is_dark(bg)
+    lower = mix(bg, "#000000", 0.18) if dark else mix(bg, "#000000", 0.05)
+    lowest = mix(bg, "#000000", 0.32) if dark else mix(bg, "#000000", 0.1)
+    side = mix(bg, sf, 0.45)
+    an = p["ansi"]
+    v = {
+        # classic names
+        "--background-primary": bg, "--background-secondary": side, "--background-secondary-alt": lower,
+        "--background-tertiary": lower, "--background-floating": lowest, "--background-nested-floating": lowest,
+        "--background-accent": ac, "--background-message-hover": _rgba(fg, 0.035),
+        "--background-modifier-hover": _rgba(fg, 0.06), "--background-modifier-active": _rgba(fg, 0.1),
+        "--background-modifier-selected": _rgba(ac, 0.22), "--background-modifier-accent": _rgba(fg, 0.08),
+        "--background-mobile-primary": bg, "--background-mobile-secondary": side,
+        "--channeltextarea-background": sf, "--modal-background": bg, "--modal-footer-background": lower,
+        "--text-normal": fg, "--text-muted": mu, "--text-link": ac2, "--text-positive": an[2],
+        "--text-warning": an[3], "--text-danger": an[1], "--text-brand": ac,
+        "--header-primary": fg, "--header-secondary": mu, "--channels-default": mu,
+        "--interactive-normal": mix(fg, mu, 0.45), "--interactive-hover": fg, "--interactive-active": fg,
+        "--interactive-muted": mix(mu, bg, 0.4), "--channel-icon": mu,
+        "--brand-experiment": ac, "--brand-500": ac, "--brand-560": adjust(ac, -0.06),
+        "--brand-600": adjust(ac, -0.1), "--brand-360": adjust(ac, 0.08), "--brand-260": adjust(ac, 0.15),
+        "--scrollbar-thin-thumb": sf, "--scrollbar-auto-thumb": sf, "--scrollbar-auto-track": lower,
+        "--scrollbar-auto-scrollbar-color-thumb": sf, "--scrollbar-auto-scrollbar-color-track": lower,
+        "--input-background": sf, "--deprecated-card-bg": side,
+        # 2025 "visual refresh" names
+        "--background-base-low": bg, "--background-base-lower": lower, "--background-base-lowest": lowest,
+        "--background-surface-high": side, "--background-surface-higher": sf,
+        "--background-surface-highest": mix(sf, fg, 0.08), "--chat-background-default": bg,
+        "--app-frame-background": lowest, "--bg-base-primary": bg, "--bg-base-secondary": side,
+        "--bg-base-tertiary": lower, "--bg-surface-raised": sf, "--bg-surface-overlay": lowest,
+        "--input-background-default": sf, "--text-default": fg, "--text-strong": fg, "--text-subtle": mu,
+        "--border-subtle": _rgba(fg, 0.08), "--border-faint": _rgba(fg, 0.05), "--border-normal": _rgba(fg, 0.12),
+        "--control-brand-foreground": ac, "--control-brand-foreground-new": ac,
+        "--button-filled-brand-background": ac, "--button-filled-brand-background-hover": adjust(ac, -0.06),
+        "--button-filled-brand-text": best_text(ac, p), "--mention-foreground": ac,
+        "--mention-background": _rgba(ac, 0.18), "--info-help-foreground": ac2,
+    }
+    body = "\n".join(f"    {k}: {val} !important;" for k, val in v.items())
+    return f"""/**
+ * @name ThemeForge
+ * @author ThemeForge
+ * @description Colors from your ThemeForge palette ({p.get('name', 'custom')}). Rewritten every time you Apply.
+ * @version {VERSION}
+ * @source https://github.com/{GITHUB_REPO}
+ */
+
+:root, .theme-dark, .theme-light, .theme-darker, .theme-midnight,
+.visual-refresh, .visual-refresh.theme-dark, .visual-refresh.theme-light {{
+{body}
+}}
+
+::selection {{ background: {_rgba(ac, 0.35)}; }}
+"""
+
+
+DISCORD_THEME_DIRS = [  # (client, config dir); themes go in <dir>/themes
+    ("Vencord", HOME / ".config" / "Vencord"),
+    ("Vesktop", HOME / ".config" / "vesktop"),
+    ("Vesktop (Flatpak)", HOME / ".var" / "app" / "dev.vencord.Vesktop" / "config" / "vesktop"),
+    ("Equicord", HOME / ".config" / "Equicord"),
+    ("Equibop", HOME / ".config" / "equibop"),
+    ("BetterDiscord", HOME / ".config" / "BetterDiscord"),
+]
+
+
+def discord_clients():
+    return [(name, d) for name, d in DISCORD_THEME_DIRS if d.is_dir()]
+
+
+def apply_discord(p, s, log):
+    clients = discord_clients()
+    if not clients:
+        log("- Discord - no Vencord, Vesktop, Equicord or BetterDiscord found (plain Discord can't load themes)")
+        return
+    css = discord_css(p)
+    for name, d in clients:
+        f = d / "themes" / "themeforge.theme.css"
+        backup(f)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(css)
+    names = ", ".join(n for n, _ in clients)
+    log(f"✓ Discord - theme written for {names}. Turn on “ThemeForge” once in Discord → Settings → Themes; "
+        "after that it updates live.")
+
+
+def btop_theme(p):
+    bg, sf, fg, mu, ac, ac2 = (p[k] for k in ("background", "surface", "foreground", "muted", "accent", "accent2"))
+    an = p["ansi"]
+    g = p["gradient"]
+    lo, mid, hi = g[0], g[len(g) // 2], g[-1]
+    t = {
+        "main_bg": bg, "main_fg": fg, "title": fg, "hi_fg": ac, "selected_bg": sf, "selected_fg": ac,
+        "inactive_fg": mu, "graph_text": mu, "meter_bg": sf, "proc_misc": ac2,
+        "cpu_box": ac, "mem_box": ac2, "net_box": an[6], "proc_box": an[5], "div_line": sf,
+        "temp_start": an[2], "temp_mid": an[3], "temp_end": an[1],
+        "cpu_start": lo, "cpu_mid": mid, "cpu_end": hi,
+        "free_start": an[2], "free_mid": an[2], "free_end": an[10],
+        "cached_start": an[4], "cached_mid": an[4], "cached_end": an[12],
+        "available_start": an[6], "available_mid": an[6], "available_end": an[14],
+        "used_start": an[5], "used_mid": an[1], "used_end": an[9],
+        "download_start": mix(ac2, bg, 0.5), "download_mid": ac2, "download_end": adjust(ac2, 0.1),
+        "upload_start": mix(ac, bg, 0.5), "upload_mid": ac, "upload_end": adjust(ac, 0.1),
+        "process_start": lo, "process_mid": mid, "process_end": hi,
+    }
+    return "# Generated by ThemeForge - rewritten every time you Apply\n" + "\n".join(
+        f'theme[{k}]="{v}"' for k, v in t.items()) + "\n"
+
+
+def apply_btop(p, s, log):
+    d = HOME / ".config" / "btop"
+    theme = d / "themes" / "themeforge.theme"
+    backup(theme)
+    theme.parent.mkdir(parents=True, exist_ok=True)
+    theme.write_text(btop_theme(p))
+    conf = d / "btop.conf"
+    backup(conf)
+    lines = conf.read_text(errors="replace").splitlines() if conf.exists() else []
+    lines = [ln for ln in lines if not re.match(r"\s*color_theme\s*=", ln)]
+    lines.append('color_theme = "themeforge"')
+    conf.write_text("\n".join(lines) + "\n")
+    log("✓ btop - theme written and selected (open btop again to see it)")
+
+
+STARSHIP_NAMES = ["black", "red", "green", "yellow", "blue", "purple", "cyan", "white"]
+
+
+def starship_palette(p):
+    a = p["ansi"]
+    rows = [f'{n} = "{a[i]}"' for i, n in enumerate(STARSHIP_NAMES)]
+    rows += [f'bright-{n} = "{a[i + 8]}"' for i, n in enumerate(STARSHIP_NAMES)]
+    rows += [f'{k} = "{p[k]}"' for k in ("background", "surface", "foreground", "muted", "accent", "accent2")]
+    return rows
+
+
+STARSHIP_MARK = "# Generated by ThemeForge - named colors in your prompt now follow your palette"
+
+
+def starship_toml(text, p):
+    out, skip, seen_table = [], False, False
+    for ln in text.splitlines():
+        st = ln.strip()
+        if st == STARSHIP_MARK:
+            continue
+        if st.startswith("["):
+            seen_table = True
+            skip = st.replace(" ", "") in ("[palettes.themeforge]", "[palettes.'themeforge']",
+                                           '[palettes."themeforge"]')
+            if skip:
+                continue
+        if skip:
+            continue
+        if not seen_table and re.match(r"palette\s*=", st):
+            continue
+        if not st and out and not out[-1].strip():
+            continue                    # collapse blank runs
+        out.append(ln)
+    first = next((i for i, ln in enumerate(out) if ln.strip().startswith("[")), len(out))
+    head, tail = out[:first], out[first:]
+    while head and not head[-1].strip():
+        head.pop()
+    while tail and not tail[-1].strip():
+        tail.pop()
+    head += ['palette = "themeforge"   # set by ThemeForge', ""]
+    body = head + tail
+    while body and not body[-1].strip():
+        body.pop()
+    body += ["", STARSHIP_MARK, "[palettes.themeforge]"] + starship_palette(p)
+    return "\n".join(body) + "\n"
+
+
+def apply_starship(p, s, log):
+    path = Path(os.environ.get("STARSHIP_CONFIG") or HOME / ".config" / "starship.toml")
+    backup(path)
+    text = path.read_text(errors="replace") if path.exists() else ""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(starship_toml(text, p))
+    log("✓ Starship - palette set (named colors like red/blue/purple now use your theme; open a new prompt)")
+
+
+def find_spicetify():
+    for c in (shutil.which("spicetify"), str(HOME / ".spicetify" / "spicetify"),
+              str(HOME / ".local" / "bin" / "spicetify")):
+        if c and os.access(c, os.X_OK):
+            return c
+    return None
+
+
+def spicetify_colors(p):
+    bg, sf, fg, mu, ac, ac2 = (p[k] for k in ("background", "surface", "foreground", "muted", "accent", "accent2"))
+    lower = mix(bg, "#000000", 0.25) if is_dark(bg) else mix(bg, "#000000", 0.06)
+    c = {"text": fg, "subtext": mu, "main": bg, "sidebar": lower, "player": lower, "card": sf,
+         "shadow": "#000000", "selected-row": fg, "button": ac, "button-active": adjust(ac, 0.06),
+         "button-disabled": mu, "tab-active": sf, "notification": ac2, "notification-error": p["ansi"][1],
+         "misc": mu}
+    return "; Generated by ThemeForge\n[themeforge]\n" + "\n".join(
+        f"{k:<19}= {v.lstrip('#')}" for k, v in c.items()) + "\n"
+
+
+def apply_spotify(p, s, log):
+    tool = find_spicetify()
+    if not tool:
+        log("- Spotify - Spicetify isn't installed (see spicetify.app)")
+        return
+    try:
+        cfg_dir = subprocess.run([tool, "path", "userdata"], capture_output=True, text=True,
+                                 timeout=15).stdout.strip().splitlines()[-1]
+        tdir = Path(cfg_dir) / "Themes" / "ThemeForge"
+    except Exception:
+        tdir = HOME / ".config" / "spicetify" / "Themes" / "ThemeForge"
+    tdir.mkdir(parents=True, exist_ok=True)
+    (tdir / "color.ini").write_text(spicetify_colors(p))
+    css = tdir / "user.css"
+    if not css.exists():
+        css.write_text("/* ThemeForge - colors come from color.ini; add your own tweaks here */\n")
+    run_cmd([tool, "config", "current_theme", "ThemeForge", "color_scheme", "themeforge"], lambda *_: None)
+    if s.get("spicetify_ready"):
+        ok = run_cmd([tool, "refresh"], log)
+    else:
+        ok = run_cmd([tool, "backup", "apply"], log) or run_cmd([tool, "apply"], log)
+        s["spicetify_ready"] = ok
+    log(("✓" if ok else "✗") + " Spotify - Spicetify theme " + ("applied" if ok else "written, but spicetify failed"))
+
+
+EXPORT_DIR = CFG_DIR / "exports"
+
+
+def vivaldi_theme(p):
+    return {
+        "accentFromPage": False, "accentOnWindow": True, "accentSaturationLimit": 1, "alpha": 1,
+        "backgroundImage": "", "backgroundPosition": "stretch", "blur": 0,
+        "colorAccentBg": p["accent"], "colorBg": p["background"], "colorFg": p["foreground"],
+        "colorHighlightBg": p["accent2"], "colorWindowBg": mix(p["background"], p["surface"], 0.5),
+        "contrast": 0, "dimBlurred": False, "engineVersion": 1,
+        "id": str(uuid.uuid5(uuid.NAMESPACE_URL, "themeforge:" + json.dumps(p, sort_keys=True))),
+        "name": f"ThemeForge - {p.get('name', 'custom')}", "preferSystemAccent": False, "radius": 6,
+        "simpleScrollbar": True, "transparencyTabBar": False, "transparencyTabs": False, "url": "", "version": 1}
+
+
+def apply_vivaldi(p, s, log):
+    import zipfile
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    out = EXPORT_DIR / "ThemeForge-vivaldi.zip"
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("settings.json", json.dumps(vivaldi_theme(p), indent=2))
+    log(f"✓ Vivaldi - theme saved to {out}. Import it in Vivaldi → Settings → Themes → Import "
+        "(Vivaldi can't be themed from outside, so this step is manual).")
+
+
 TARGETS = [
     ("kitty", "kitty", "Writes themeforge.conf, includes it from kitty.conf, live-reloads open windows", "kitty", apply_kitty),
     ("cava", "cava", "Rewrites the [color] section with your gradient and live-reloads", "cava", apply_cava),
@@ -1431,13 +2799,30 @@ TARGETS = [
      "plasma-apply-colorscheme", apply_kde),
     ("konsole", "Konsole", "Color scheme, set on your default profile", "konsole", apply_konsole),
     ("widgets", "ThemeForge widgets", "Regenerates the widgets you built with the new colors", "conky", apply_widgets),
-    ("visualizers", "Music visualizers", "Running desktop visualizers switch to the new colors", "cava",
-     apply_visualizers),
+    ("visualizers", "Visualizers & panels", "Running visualizers, launchers and now playing cards switch colors",
+     None, apply_live),
     ("conky", "Other conky configs", "Recolors conky files you added on the Widgets tab (opt-in per file)", "conky",
      apply_external_conky),
     ("wallpaper", "Wallpaper", "Sets the image you picked on the Colors tab", "plasma-apply-wallpaperimage",
      apply_wallpaper),
+    ("icons", "Icons", "Switches icon theme and matches Papirus folder colors to your accent (options below)",
+     None, apply_icons),
+    ("discord", "Discord", "Theme for Vencord, Vesktop, Equicord or BetterDiscord", None, apply_discord),
+    ("spotify", "Spotify", "Spicetify color scheme", find_spicetify, apply_spotify),
+    ("btop", "btop", "Writes a btop theme and selects it", "btop", apply_btop),
+    ("starship", "Starship prompt", "Palette for starship.toml - named colors follow your theme", "starship",
+     apply_starship),
+    ("vivaldi", "Vivaldi", "Exports a Vivaldi theme you import once per change", None, apply_vivaldi),
 ]
+
+
+def target_available(exe):
+    """(ok, label) for a target's required program; exe can be a name, a finder function or None."""
+    if exe is None:
+        return True, "ready"
+    path = exe() if callable(exe) else shutil.which(exe)
+    name = "spicetify" if callable(exe) else exe
+    return (True, "installed") if path else (False, f"{name} not found")
 
 
 def apply_all(s, log):
@@ -1445,8 +2830,9 @@ def apply_all(s, log):
     for key, name, _desc, exe, fn in TARGETS:
         if not s["targets"].get(key):
             continue
-        if exe and not shutil.which(exe):
-            log(f"- {name} - skipped, {exe} isn't installed")
+        ok, why = target_available(exe)
+        if not ok:
+            log(f"- {name} - skipped, {why}")
             continue
         try:
             fn(p, s, log)
@@ -1457,28 +2843,46 @@ def apply_all(s, log):
 
 
 def restore_originals(s, log):
-    if not ORIG_DIR.exists():
-        log("Nothing to restore - ThemeForge hasn't changed any of your files yet.")
-        return
-    for f in sorted(ORIG_DIR.rglob("*")):
-        if f.is_dir():
-            continue
-        rel = str(f.relative_to(ORIG_DIR))
-        if rel.endswith(".tf-absent"):
-            target = HOME / rel[: -len(".tf-absent")]
-            if target.exists():
-                target.unlink()
-                log(f"   removed {target} (didn't exist before ThemeForge)")
-        else:
-            target = HOME / rel
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(f, target)
-            log(f"   restored {target}")
-    shutil.rmtree(ORIG_DIR, ignore_errors=True)
+    if ORIG_DIR.exists():
+        for f in sorted(ORIG_DIR.rglob("*")):
+            if f.is_dir():
+                continue
+            rel = str(f.relative_to(ORIG_DIR))
+            if rel.endswith(".tf-absent"):
+                target = HOME / rel[: -len(".tf-absent")]
+                if target.exists():
+                    target.unlink()
+                    log(f"   removed {target} (didn't exist before ThemeForge)")
+            else:
+                target = HOME / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, target)
+                log(f"   restored {target}")
+        shutil.rmtree(ORIG_DIR, ignore_errors=True)
+    else:
+        log("   no config files to put back")
     orig = s.pop("kde_original_scheme", None)
     if orig:
         run_cmd(["plasma-apply-colorscheme", orig], log)
         log(f"   KDE color scheme back to {orig}")
+    if "kde_original_accent" in s:
+        acc = s.pop("kde_original_accent")
+        if acc:
+            r, g, b = (int(x) for x in acc.split(",")[:3])
+            run_cmd(["plasma-apply-colorscheme", "--accent-color", rgb_to_hex((r, g, b))], log)
+        else:
+            tool = shutil.which("kwriteconfig6") or shutil.which("kwriteconfig5")
+            if tool:
+                run_cmd([tool, "--file", "kdeglobals", "--group", "General", "--key", "AccentColor", "--delete"],
+                        lambda *_: None)
+        log("   KDE accent color back to how it was")
+    icons = s.pop("icon_original_theme", None)
+    if icons:
+        tool = find_plasma_changeicons()
+        if tool:
+            run_cmd([tool, icons], log)
+        log(f"   icon theme back to {icons}")
+    s.pop("spicetify_ready", None)
     signal_procs("kitty", signal.SIGUSR1)
     signal_procs("cava", signal.SIGUSR1)
     log("✓ Originals restored.")
@@ -1499,13 +2903,25 @@ def detect_conky_files():
     return [{"path": str(f), "recolor": False, "autostart": False} for f in found]
 
 
+ALBUM_DEFAULTS = {"enabled": False, "targets": ["kitty", "cava", "widgets", "visualizers"], "light": False,
+                  "revert": True}
+
+
 def default_settings():
     return {"palette": copy.deepcopy(PRESETS["Catppuccin Mocha"]),
             "targets": {key: key in ("kitty", "cava", "kde", "widgets", "visualizers") for key, *_ in TARGETS},
             "wallpaper": "",
             "widgets": [widget_template("clock"), widget_template("system")],
             "visualizers": [vis_template("bottom")],
+            "panels": [],
             "external_conky": detect_conky_files(),
+            "profiles": [],
+            "current_profile": "",
+            "album": copy.deepcopy(ALBUM_DEFAULTS),
+            "tray": False,
+            "icon_theme": "",
+            "papirus_folders": True,
+            "kde_accent": True,
             "check_updates": True,
             "last_update_check": 0,
             "skip_version": ""}
@@ -1516,35 +2932,51 @@ def load_settings():
     try:
         data = json.loads(SETTINGS_FILE.read_text())
         targets = s["targets"]
+        album = s["album"]
         s.update(data)
         targets.update(data.get("targets", {}))
-        s["targets"] = targets
+        album.update(data.get("album") or {})
+        s["targets"], s["album"] = targets, album
         if not valid_palette(s["palette"]):
             s["palette"] = copy.deepcopy(PRESETS["Catppuccin Mocha"])
     except FileNotFoundError:
         pass
     except Exception as e:
         print(f"ThemeForge: couldn't read settings ({e}); using defaults", file=sys.stderr)
+    s.pop("visualizers_palette", None)          # replaced by live-palette.json in 2.2
     s["widgets"] = [normalize_widget(w) for w in s.get("widgets", [])]
     s["visualizers"] = [normalize_vis(v) for v in s.get("visualizers", [])]
+    s["panels"] = [normalize_panel(x) for x in s.get("panels", [])]
+    s["profiles"] = [x for x in s.get("profiles", []) if isinstance(x, dict) and x.get("name")
+                     and valid_palette(x.get("palette", {}))]
     return s
 
 
+_save_lock = threading.Lock()
+
+
 def save_settings(s):
-    CFG_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = SETTINGS_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(s, indent=2))
-    tmp.replace(SETTINGS_FILE)
+    with _save_lock:
+        CFG_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = SETTINGS_FILE.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(s, indent=2))
+        tmp.replace(SETTINGS_FILE)
+
+
+def service_wanted(s):
+    return bool(s.get("tray") or s["album"].get("enabled"))
 
 
 def update_autostart(s):
     wanted = (any(w.get("autostart") for w in s["widgets"])
               or any(e.get("autostart") for e in s.get("external_conky", []))
-              or any(v.get("autostart") for v in s.get("visualizers", [])))
+              or any(v.get("autostart") for v in s.get("visualizers", []))
+              or any(x.get("autostart") for x in s.get("panels", []))
+              or service_wanted(s))
     if wanted:
         AUTOSTART_FILE.parent.mkdir(parents=True, exist_ok=True)
         AUTOSTART_FILE.write_text(
-            "[Desktop Entry]\nType=Application\nName=ThemeForge widgets & visualizers\n"
+            "[Desktop Entry]\nType=Application\nName=ThemeForge (widgets, visualizers, tray)\n"
             f'Exec="{sys.executable}" "{SCRIPT}" --start-widgets\n'
             "X-KDE-autostart-after=panel\nNoDisplay=true\n")
     elif AUTOSTART_FILE.exists():
@@ -1564,6 +2996,455 @@ def start_autostart(s):
     for v in s.get("visualizers", []):
         if v.get("autostart") and not vis_pids(v["id"]):
             start_visualizer(v)
+    for x in s.get("panels", []):
+        if x.get("autostart") and not panel_pids(x["id"]):
+            start_panel(x)
+    if service_wanted(s):
+        ensure_service()
+
+
+# ════════════════════════════════════════════════════════════════════
+#  Profiles, album-art mode and the background service (tray icon)
+# ════════════════════════════════════════════════════════════════════
+
+BOOKKEEPING_KEYS = ("kde_original_scheme", "kde_original_accent", "icon_original_theme",
+                    "papirus_color_applied", "spicetify_ready")
+ALBUM_TARGETS = [("kitty", "kitty"), ("cava", "cava"), ("widgets", "Widgets"),
+                 ("visualizers", "Visualizers & panels"), ("konsole", "Konsole"), ("discord", "Discord"),
+                 ("btop", "btop"), ("kde", "KDE Plasma (slower, briefly redraws apps)")]
+ALBUM_STATUS_FILE = CFG_DIR / "album-status.json"
+SHORTCUT_DESKTOP = HOME / ".local" / "share" / "applications" / "themeforge-next-profile.desktop"
+APPLY_LOCK = threading.RLock()
+
+
+def apply_targets(p, s, keys, log):
+    done = 0
+    for key, name, _desc, exe, fn in TARGETS:
+        if key not in keys:
+            continue
+        ok, _why = target_available(exe)
+        if not ok:
+            continue
+        try:
+            fn(p, s, log)
+            done += 1
+        except Exception as e:
+            log(f"✗ {name} - failed: {e}")
+    return done
+
+
+def save_bookkeeping(applied):
+    """Merge only ThemeForge's own bookkeeping into the settings file, so a background apply
+    never overwrites edits made in the app at the same time."""
+    fresh = load_settings()
+    changed = False
+    for k in BOOKKEEPING_KEYS:
+        if k in applied and fresh.get(k) != applied[k]:
+            fresh[k] = applied[k]
+            changed = True
+    if changed:
+        save_settings(fresh)
+
+
+def list_user_themes():
+    return [f.stem for f in sorted(THEMES_DIR.glob("*.json"), key=lambda f: f.stem.lower())] \
+        if THEMES_DIR.exists() else []
+
+
+def load_user_theme(name):
+    p = json.loads((THEMES_DIR / f"{name}.json").read_text())
+    p["name"] = name
+    if not valid_palette(p):
+        raise ValueError("that theme file is missing some colors")
+    return p
+
+
+def running_state(s):
+    procs = conky_procs()
+    return {"widgets": [w["id"] for w in s["widgets"] if conky_pids(widget_path(w), procs)],
+            "visualizers": [v["id"] for v in s["visualizers"] if vis_pids(v["id"])],
+            "panels": [x["id"] for x in s["panels"] if panel_pids(x["id"])],
+            "external_conky": [e["path"] for e in s.get("external_conky", []) if conky_pids(e["path"], procs)]}
+
+
+def capture_profile(s, name):
+    prof = {"name": name, "palette": copy.deepcopy(s["palette"]), "wallpaper": s.get("wallpaper", ""),
+            "targets": dict(s["targets"]), "album": bool(s["album"]["enabled"]),
+            "icon_theme": s.get("icon_theme", "")}
+    prof.update(running_state(s))
+    return prof
+
+
+def save_profile(s, name):
+    prof = capture_profile(s, name)
+    for i, x in enumerate(s["profiles"]):
+        if x["name"] == name:
+            s["profiles"][i] = prof
+            break
+    else:
+        s["profiles"].append(prof)
+    s["current_profile"] = name
+    return prof
+
+
+def set_running(s, wanted):
+    """Start/stop widgets, visualizers, panels and conky files so exactly `wanted` ones run."""
+    procs = conky_procs()
+    for w in s["widgets"]:
+        path = widget_path(w)
+        on, running = w["id"] in wanted.get("widgets", []), bool(conky_pids(path, procs))
+        if on and not running:
+            start_conky(write_widget(w, s["palette"]))
+        elif running and not on:
+            stop_conky(path)
+    for e in s.get("external_conky", []):
+        on, running = e["path"] in wanted.get("external_conky", []), bool(conky_pids(e["path"], procs))
+        if on and not running and Path(e["path"]).exists():
+            start_conky(e["path"])
+        elif running and not on:
+            stop_conky(e["path"])
+    for v in s["visualizers"]:
+        on, running = v["id"] in wanted.get("visualizers", []), bool(vis_pids(v["id"]))
+        if on and not running:
+            start_visualizer(v)
+        elif running and not on:
+            stop_visualizer(v["id"])
+    for x in s["panels"]:
+        on, running = x["id"] in wanted.get("panels", []), bool(panel_pids(x["id"]))
+        if on and not running:
+            start_panel(x)
+        elif running and not on:
+            stop_panel(x["id"])
+
+
+def switch_profile(s, name, log):
+    prof = next((x for x in s["profiles"] if x["name"] == name), None)
+    if prof is None:
+        raise ValueError(f"there's no profile called “{name}”")
+    with APPLY_LOCK:
+        s["palette"] = copy.deepcopy(prof["palette"])
+        if prof.get("wallpaper"):
+            s["wallpaper"] = prof["wallpaper"]
+        s["targets"].update(prof.get("targets", {}))
+        s["icon_theme"] = prof.get("icon_theme", s.get("icon_theme", ""))
+        s["album"]["enabled"] = bool(prof.get("album"))
+        s["current_profile"] = name
+        log(f"— Switching to profile “{name}” at {time.strftime('%H:%M:%S')} —")
+        apply_all(s, log)
+        write_live_palette(s["palette"])
+        set_running(s, prof)
+        save_settings(s)
+        update_autostart(s)
+    if service_wanted(s):
+        ensure_service()
+    log(f"✓ Profile “{name}” is active")
+
+
+def next_profile_name(s):
+    names = [x["name"] for x in s["profiles"]]
+    if not names:
+        return None
+    cur = s.get("current_profile")
+    i = names.index(cur) if cur in names else -1
+    return names[(i + 1) % len(names)]
+
+
+def notify(title, body=""):
+    if shutil.which("notify-send"):
+        subprocess.Popen(["notify-send", "-a", "ThemeForge", "-i", "preferences-desktop-color", title, body],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def install_shortcut_entry():
+    SHORTCUT_DESKTOP.parent.mkdir(parents=True, exist_ok=True)
+    SHORTCUT_DESKTOP.write_text(
+        "[Desktop Entry]\nType=Application\nName=ThemeForge: Next profile\n"
+        "Comment=Switch to your next ThemeForge desktop profile\n"
+        f'Exec="{sys.executable}" "{SCRIPT}" --next-profile\n'
+        "Icon=preferences-desktop-color\nCategories=Settings;Utility;\nTerminal=false\n")
+    subprocess.run(["update-desktop-database", str(SHORTCUT_DESKTOP.parent)], capture_output=True)
+    return SHORTCUT_DESKTOP
+
+
+def ensure_service():
+    if not tf_pids("--service"):
+        start_tf_process("--service", None, False, CFG_DIR)
+
+
+def stop_everything(s):
+    for w in s["widgets"]:
+        stop_conky(widget_path(w))
+    for v in s["visualizers"]:
+        stop_visualizer(v["id"])
+    for x in s["panels"]:
+        stop_panel(x["id"])
+
+
+def palette_icon(p, size=64):
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    qp = QPainter(pm)
+    qp.setRenderHint(QPainter.Antialiasing)
+    r = QRectF(3, 3, size - 6, size - 6)
+    cols = [p["accent"], p["accent2"], p["ansi"][5], p["ansi"][6]]
+    for i, c in enumerate(cols):
+        path = QPainterPath(r.center())
+        path.arcTo(r, 90 - i * 90, -90)
+        path.closeSubpath()
+        qp.fillPath(path, QColor(c))
+    qp.setPen(QPen(QColor(p["background"]), size * 0.08))
+    qp.setBrush(QColor(p["background"]))
+    qp.drawEllipse(r.center(), size * 0.17, size * 0.17)
+    qp.end()
+    return QIcon(pm)
+
+
+class AlbumArtWatcher(QObject):
+    """Recolors the album-art targets whenever a new cover starts playing."""
+    finished = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.enabled = False
+        self.last_art = None
+        self.active = False
+        self.idle_since = None
+        self.busy = False
+        self.pending = None
+        self.proc = QProcess(self)
+        self.proc.finished.connect(self.on_np)
+        self.timer = QTimer(self)
+        self.timer.setInterval(2000)
+        self.timer.timeout.connect(self.poll)
+        self.finished.connect(self.on_finished)
+
+    def set_enabled(self, on):
+        if on == self.enabled:
+            return
+        self.enabled = on
+        if on:
+            self.last_art = None
+            self.timer.start()
+            self.poll()
+        else:
+            self.timer.stop()
+            if self.active:
+                self.run(None)
+
+    def poll(self):
+        if self.proc.state() == QProcess.NotRunning and shutil.which("playerctl"):
+            self.proc.start("playerctl", ["metadata", "--format", NP_FORMAT])
+
+    def on_np(self, *_):
+        if not self.enabled:
+            return
+        np = parse_np(bytes(self.proc.readAllStandardOutput()).decode(errors="ignore"))
+        if np and np["status"] == "Playing" and np["art"]:
+            self.idle_since = None
+            if np["art"] != self.last_art:
+                self.last_art = np["art"]
+                self.run(np)
+        elif self.active:
+            self.idle_since = self.idle_since or time.monotonic()
+            s = load_settings()
+            if s["album"].get("revert", True) and time.monotonic() - self.idle_since > 15:
+                self.last_art = None
+                self.run(None)
+
+    def run(self, np):
+        """np=None means go back to the user's own theme."""
+        if self.busy:
+            self.pending = ("np", np)
+            return
+        self.busy = True
+        threading.Thread(target=self.work, args=(np,), daemon=True).start()
+
+    def work(self, np):
+        try:
+            s = load_settings()
+            keys = s["album"].get("targets", [])
+            if np is None:
+                p = s["palette"]
+                status = {"state": "off", "time": time.time()}
+            else:
+                path = fetch_art(np["art"])
+                if not path:
+                    raise RuntimeError("couldn't get the album art")
+                p = palette_from_wallpaper(path, s["album"].get("light", False))
+                p["name"] = f"♪ {np['title'] or 'Now playing'}"
+                status = {"state": "on", "title": np["title"], "artist": np["artist"], "time": time.time(),
+                          "palette": p}
+            with APPLY_LOCK:
+                apply_targets(p, s, keys, print)
+                save_bookkeeping(s)
+            self.active = np is not None
+            ALBUM_STATUS_FILE.write_text(json.dumps(status))
+        except Exception as e:
+            print(f"album-art mode: {e}", file=sys.stderr)
+        finally:
+            self.finished.emit()
+
+    def on_finished(self):
+        self.busy = False
+        if self.pending:
+            _, np = self.pending
+            self.pending = None
+            if self.enabled or np is None:
+                self.run(np)
+
+
+class Service(QObject):
+    """Background process: tray icon + album-art mode. Exits when neither is switched on."""
+
+    def __init__(self, app):
+        super().__init__()
+        self.app = app
+        self.tray = None
+        self.menu = None
+        self.stamp = None
+        self.album = AlbumArtWatcher(self)
+        self.timer = QTimer(self)
+        self.timer.setInterval(1500)
+        self.timer.timeout.connect(self.sync)
+        self.timer.start()
+        self.sync()
+
+    def sync(self):
+        stamp = (_mtime(SETTINGS_FILE), _mtime(LIVE_PALETTE_FILE))
+        if stamp == self.stamp:
+            return
+        self.stamp = stamp
+        s = load_settings()
+        if not service_wanted(s):
+            self.album.set_enabled(False)
+            QTimer.singleShot(3000 if self.album.busy else 0, self.app.quit)
+            return
+        self.album.set_enabled(bool(s["album"].get("enabled")))
+        if s.get("tray") and not QSystemTrayIcon.isSystemTrayAvailable():
+            self.stamp = None           # the panel's tray isn't up yet (e.g. right after login) - retry
+            return
+        if s.get("tray"):
+            if self.tray is None:
+                self.tray = QSystemTrayIcon(self)
+                self.tray.activated.connect(self.on_activated)
+            self.tray.setIcon(palette_icon(read_live_palette(s["palette"])))
+            prof = s.get("current_profile")
+            self.tray.setToolTip("ThemeForge" + (f" — {prof}" if prof else "") + f"\n{s['palette'].get('name', '')}")
+            self.build_menu(s)
+            self.tray.show()
+        elif self.tray is not None:
+            self.tray.hide()
+            self.tray.deleteLater()
+            self.tray = None
+
+    def build_menu(self, s):
+        m = QMenu()
+        m.addAction("Open ThemeForge").triggered.connect(open_app)
+        m.addSeparator()
+        pm = m.addMenu("Profiles")
+        if s["profiles"]:
+            for x in s["profiles"]:
+                a = pm.addAction(x["name"].replace("&", "&&"))
+                a.setCheckable(True)
+                a.setChecked(x["name"] == s.get("current_profile"))
+                a.triggered.connect(lambda *_, n=x["name"]: self.in_background(self.do_profile, n))
+            pm.addSeparator()
+            pm.addAction("Next profile").triggered.connect(
+                lambda *_: self.in_background(self.do_profile, None))
+        else:
+            pm.addAction("No profiles yet - save one in ThemeForge").setEnabled(False)
+        tm = m.addMenu("Themes")
+        for name in PRESETS:
+            tm.addAction(name).triggered.connect(lambda *_, n=name: self.in_background(self.do_theme, n, False))
+        users = list_user_themes()
+        if users:
+            tm.addSeparator()
+            for name in users:
+                tm.addAction(f"★ {name}").triggered.connect(
+                    lambda *_, n=name: self.in_background(self.do_theme, n, True))
+        a = m.addAction("Match album art")
+        a.setCheckable(True)
+        a.setChecked(bool(s["album"].get("enabled")))
+        a.toggled.connect(self.toggle_album)
+        m.addSeparator()
+        m.addAction("Apply my theme again").triggered.connect(
+            lambda *_: self.in_background(lambda: apply_all(load_settings(), print)))
+        m.addAction("Stop widgets, visualizers && panels").triggered.connect(
+            lambda *_: stop_everything(load_settings()))
+        m.addSeparator()
+        m.addAction("Hide tray icon").triggered.connect(self.hide_tray)
+        self.menu = m
+        self.tray.setContextMenu(m)
+
+    def on_activated(self, reason):
+        if reason == QSystemTrayIcon.Trigger:
+            open_app()
+        elif reason == QSystemTrayIcon.MiddleClick:
+            self.in_background(self.do_profile, None)
+
+    def in_background(self, fn, *args):
+        threading.Thread(target=lambda: self._guard(fn, *args), daemon=True).start()
+
+    @staticmethod
+    def _guard(fn, *args):
+        try:
+            with APPLY_LOCK:
+                fn(*args)
+        except Exception as e:
+            notify("ThemeForge", str(e))
+
+    @staticmethod
+    def do_profile(name):
+        s = load_settings()
+        name = name or next_profile_name(s)
+        if not name:
+            notify("ThemeForge", "You haven't saved any profiles yet.")
+            return
+        switch_profile(s, name, print)
+        notify(f"Profile: {name}")
+
+    @staticmethod
+    def do_theme(name, user):
+        s = load_settings()
+        s["palette"] = load_user_theme(name) if user else copy.deepcopy(PRESETS[name])
+        apply_all(s, print)
+        save_settings(s)
+
+    @staticmethod
+    def toggle_album(on):
+        s = load_settings()
+        s["album"]["enabled"] = on
+        save_settings(s)
+        update_autostart(s)
+
+    @staticmethod
+    def hide_tray():
+        s = load_settings()
+        s["tray"] = False
+        save_settings(s)
+        update_autostart(s)
+
+
+def open_app():
+    subprocess.Popen([sys.executable, str(SCRIPT)], start_new_session=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def run_service():
+    if tf_pids("--service"):
+        return
+    app = QApplication(sys.argv[:1])
+    app.setApplicationName("ThemeForge")
+    app.setDesktopFileName("themeforge")
+    app.setQuitOnLastWindowClosed(False)
+    svc = Service(app)
+    signal.signal(signal.SIGTERM, lambda *_: app.quit())
+    signal.signal(signal.SIGINT, lambda *_: app.quit())
+    tick = QTimer()
+    tick.start(300)
+    tick.timeout.connect(lambda: None)
+    app.exec()
+    svc.album.set_enabled(False)
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -1577,6 +3458,7 @@ def app_qss(p):
     QWidget {{ background: {bg}; color: {fg}; font-size: 10pt; }}
     QLabel#title {{ font-size: 18pt; font-weight: bold; }}
     QLabel#muted, QLabel#hint {{ color: {mu}; }}
+    QLabel#warn {{ color: {p["ansi"][3]}; }}
     QLabel#section {{ color: {mu}; font-weight: bold; letter-spacing: 1px; padding-top: 6px; }}
     QLabel#thumb {{ background: {view}; border: 1px dashed {line}; border-radius: 6px; color: {mu}; }}
     QTabWidget::pane {{ border: 1px solid {sf}; border-radius: 8px; top: -1px; }}
@@ -1595,12 +3477,16 @@ def app_qss(p):
         selection-background-color: {ac}; selection-color: {sel_fg}; }}
     QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{ min-height: 22px; }}
     QLineEdit:focus, QSpinBox:focus, QComboBox:focus {{ border-color: {ac}; }}
+    QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled,
+    QCheckBox:disabled {{ color: {mu}; }}
     QCheckBox::indicator {{ width: 16px; height: 16px; border: 1px solid {mix(line, fg, 0.35)};
                            border-radius: 4px; background: {view}; }}
     QCheckBox::indicator:checked {{ background: {ac}; border-color: {ac}; }}
     QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}
     QScrollBar::handle:vertical {{ background: {line}; border-radius: 5px; min-height: 30px; }}
     QScrollBar::handle:vertical:hover {{ background: {mu}; }}
+    QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 0; }}
+    QScrollBar::handle:horizontal {{ background: {line}; border-radius: 5px; min-width: 30px; }}
     QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
     QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
     QComboBox QAbstractItemView {{ background: {sf}; border: 1px solid {line}; }}
@@ -1946,7 +3832,15 @@ class WidgetPreview(QWidget):
             return 9
         if kind == "space":
             return base * row[1]
+        if kind == "mono":
+            return QFontMetricsF(self.mono(row[2])).height()
         return 0
+
+    @staticmethod
+    def mono(size):
+        f = QFontDatabase.systemFont(QFontDatabase.FixedFont)
+        f.setPointSizeF(max(1, size))
+        return f
 
     def paintEvent(self, e):
         qp = QPainter(self)
@@ -2003,6 +3897,19 @@ class WidgetPreview(QWidget):
             qp.setFont(self.font(size, bold))
             qp.setPen(QColor(role_color(p, role)))
             qp.drawText(rect, align.get(al, Qt.AlignLeft) | Qt.AlignVCenter, text)
+        elif kind == "mono":
+            _, segs, size, al = row
+            f = self.mono(size)
+            fm = QFontMetricsF(f)
+            qp.setFont(f)
+            total = sum(fm.horizontalAdvance(t) for t, _ in segs)
+            x = {"center": rect.left() + (rect.width() - total) / 2,
+                 "right": rect.right() - total}.get(al, rect.left())
+            y = rect.top() + fm.ascent()
+            for text, role in segs:
+                qp.setPen(QColor(role_color(p, role)))
+                qp.drawText(QPointF(x, y), text)
+                x += fm.horizontalAdvance(text)
         elif kind == "kv":
             _, label, value, lr, vr = row
             qp.setFont(self.font(w["font_size"]))
@@ -2238,7 +4145,7 @@ class WidgetsTab(QWidget):
         b_new.setPopupMode(QToolButton.InstantPopup)
         m = QMenu(b_new)
         for key, label in WIDGET_TEMPLATES:
-            m.addAction(label).triggered.connect(lambda *_, k=key: self.add_widget(k))
+            m.addAction(label.replace("&", "&&")).triggered.connect(lambda *_, k=key: self.add_widget(k))
         b_new.setMenu(m)
         b_dup = QPushButton("Duplicate")
         b_dup.clicked.connect(self.dup_widget)
@@ -2275,6 +4182,7 @@ class WidgetsTab(QWidget):
         # middle: editor
         mid_scroll = QScrollArea()
         mid_scroll.setWidgetResizable(True)
+        mid_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         mid = QWidget()
         mv = QVBoxLayout(mid)
         mv.setContentsMargins(4, 0, 12, 0)
@@ -2336,7 +4244,7 @@ class WidgetsTab(QWidget):
         b_addb.setPopupMode(QToolButton.InstantPopup)
         m = QMenu(b_addb)
         for key, (title, _f) in BLOCK_TYPES.items():
-            m.addAction(title).triggered.connect(lambda *_, k=key: self.add_block(k))
+            m.addAction(title.replace("&", "&&")).triggered.connect(lambda *_, k=key: self.add_block(k))
         b_addb.setMenu(m)
         row.addWidget(b_addb)
         for label, fn in (("↑", lambda *_: self.move_block(-1)), ("↓", lambda *_: self.move_block(1)),
@@ -2556,7 +4464,7 @@ class WidgetsTab(QWidget):
                         wdg.addItem(l2, k2)
                 else:
                     for o in opts:
-                        wdg.addItem("US (°F)" if o == "us" else o.capitalize(), o)
+                        wdg.addItem({"us": "US (°F)", "metric": "Metric (°C)", "c": "°C", "f": "°F"}.get(o, o.capitalize()), o)
                 wdg.setCurrentIndex(max(0, wdg.findData(val)))
                 wdg.currentIndexChanged.connect(lambda i, k=key, w=wdg: self.set_block(k, w.itemData(i)))
             self.bform.addRow(label, wdg)
@@ -2725,14 +4633,16 @@ class VisualizerPreview(QWidget):
         self.pal = None
         self.wall = None
         self.wall_path = None
+        self.panels = []
         self.t = 0.0
         self.setMinimumSize(380, 260)
         self.timer = QTimer(self)
         self.timer.setInterval(33)
         self.timer.timeout.connect(self.tick)
 
-    def set_data(self, v, p, wallpaper):
+    def set_data(self, v, p, wallpaper, panels=None):
         self.v, self.pal = v, p
+        self.panels = panels or []
         if wallpaper != self.wall_path:
             self.wall_path = wallpaper
             self.wall = QPixmap(wallpaper) if wallpaper and Path(wallpaper).exists() else None
@@ -2784,12 +4694,35 @@ class VisualizerPreview(QWidget):
             qp.setPen(QColor(p["foreground"]))
             qp.drawText(sr, Qt.AlignCenter, "Create or pick a visualizer")
             return
-        g = vis_geometry(self.v, sg)
+        panels = self.panels
+        g = vis_geometry(self.v, sg, panels)
         vr = QRectF(sr.left() + g.left() * k, sr.top() + g.top() * k, g.width() * k, g.height() * k)
-        qp.setPen(QPen(QColor(mix(p["foreground"], p["background"], 0.4)), 1, Qt.DotLine))
-        qp.drawRect(vr)
+        wrapped = wrapped_panel(self.v, panels)
+        if wrapped is not None:
+            n_items = panel_item_count(wrapped)
+            pr = panel_rect(wrapped, sg, n_items)
+            qp.save()
+            qp.translate(sr.left(), sr.top())
+            qp.scale(k, k)
+            paint_panel(qp, pr.topLeft(), wrapped, p, {"items": [{"name": "", "path": str(i)}
+                                                                  for i in range(n_items)],
+                                                       "np": {"status": "Playing", "title": "Song title",
+                                                              "artist": "Artist", "length": 200,
+                                                              "position": 80}})
+            qp.restore()
+        else:
+            qp.setPen(QPen(QColor(mix(p["foreground"], p["background"], 0.4)), 1, Qt.DotLine))
+            qp.drawRect(vr)
         n = vis_bar_count(self.v)
-        paint_visualizer(qp, vr, fake_spectrum(n, self.t, self.v["stereo"]), self.v, p)
+        if wrapped is not None or self.v["style"] == "frame":
+            qp.save()
+            qp.translate(vr.left(), vr.top())
+            qp.scale(k, k)
+            paint_visualizer(qp, QRectF(0, 0, g.width(), g.height()), fake_spectrum(n, self.t, self.v["stereo"]),
+                             self.v, p)
+            qp.restore()
+        else:
+            paint_visualizer(qp, vr, fake_spectrum(n, self.t, self.v["stereo"]), self.v, p)
         qp.end()
 
 
@@ -2804,11 +4737,14 @@ class VisualizersTab(QWidget):
             ("rounded", "bool", "Rounded ends", None),
             ("stereo", "bool", "Stereo - bass in the middle", None),
             ("flip", "bool", "Hang from the top", None),
+            ("glow", "bool", "Glow with the bass", None),
             ("opacity", "int", "Opacity", (5, 100, " %")),
             ("smoothing", "int", "Smoothing", (0, 100, " %")),
             ("framerate", "int", "Frame rate", (10, 144, " fps")),
         ]),
         ("Placement", [
+            ("wrap", "panel", "Wrap around", None),
+            ("depth", "int", "Frame bar length", (6, 300, " px")),
             ("alignment", "combo", "Position", ALIGNMENTS),
             ("gap_x", "int", "Offset  ↔", (-8000, 8000, " px")),
             ("gap_y", "int", "Offset  ↕", (-8000, 8000, " px")),
@@ -2843,7 +4779,7 @@ class VisualizersTab(QWidget):
         b_new.setPopupMode(QToolButton.InstantPopup)
         m = QMenu(b_new)
         for key, label in VIS_TEMPLATES:
-            m.addAction(label).triggered.connect(lambda *_, k=key: self.add(k))
+            m.addAction(label.replace("&", "&&")).triggered.connect(lambda *_, k=key: self.add(k))
         b_new.setMenu(m)
         b_dup = QPushButton("Duplicate")
         b_dup.clicked.connect(self.duplicate)
@@ -2858,6 +4794,7 @@ class VisualizersTab(QWidget):
 
         mid_scroll = QScrollArea()
         mid_scroll.setWidgetResizable(True)
+        mid_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         mid = QWidget()
         mv = QVBoxLayout(mid)
         mv.setContentsMargins(4, 0, 12, 0)
@@ -2925,7 +4862,9 @@ class VisualizersTab(QWidget):
             w.toggled.connect(lambda val: self.set_field(key, val))
         else:
             w = QComboBox()
-            if kind == "screen":
+            if kind == "panel":
+                w.addItem("Nothing - place it myself", "")
+            elif kind == "screen":
                 w.addItem("Primary screen", "")
                 for s in QGuiApplication.screens():
                     w.addItem(f"{s.name()}  ({s.geometry().width()}×{s.geometry().height()})", s.name())
@@ -2947,10 +4886,29 @@ class VisualizersTab(QWidget):
         self.select(self.vlist.currentRow())
 
     def refresh_preview(self):
-        self.preview.set_data(self.cur, self.win.pal, self.win.settings.get("wallpaper"))
+        self.preview.set_data(self.cur, self.win.pal, self.win.settings.get("wallpaper"),
+                              self.win.settings.get("panels"))
+
+    def fill_panel_combo(self):
+        box = self.inputs["wrap"]
+        box.blockSignals(True)
+        box.clear()
+        box.addItem("Nothing - place it myself", "")
+        for x in self.win.settings.get("panels", []):
+            box.addItem(f"{x['name']}  ({dict(PANEL_KINDS)[x['kind']].lower()})", x["id"])
+        box.blockSignals(False)
+
+    def update_enabled(self):
+        if not self.cur:
+            return
+        wrapped = bool(self.cur.get("wrap"))
+        for key in ("alignment", "gap_x", "gap_y", "width", "height", "screen"):
+            self.inputs[key].setEnabled(not wrapped)
+        self.inputs["depth"].setEnabled(wrapped or self.cur["style"] == "frame")
 
     def select(self, row):
         self.cur = self.items[row] if 0 <= row < len(self.items) else None
+        self.fill_panel_combo()
         self.loading = True
         for key, w in self.inputs.items():
             w.setEnabled(self.cur is not None)
@@ -2970,6 +4928,7 @@ class VisualizersTab(QWidget):
                     idx = w.count() - 1
                 w.setCurrentIndex(max(0, idx))
         self.loading = False
+        self.update_enabled()
         self.refresh_preview()
         self.refresh_status()
 
@@ -2983,11 +4942,22 @@ class VisualizersTab(QWidget):
                 item.setText(val)
         if key == "autostart":
             update_autostart(self.win.settings)
+        if key == "wrap" and val and self.cur["style"] != "frame":
+            self.cur["style"] = "frame"
+            self.select(self.vlist.currentRow())
+        self.update_enabled()
         self.refresh_preview()
         self.win.schedule_save()
 
     def add(self, kind):
-        self.items.append(vis_template(kind))
+        v = vis_template(kind)
+        if kind == "frame":
+            panels = self.win.settings.get("panels", [])
+            target = next((x for x in panels if x["kind"] == "nowplaying"), panels[0] if panels else None)
+            if target:
+                v["wrap"] = target["id"]
+                v["name"] = f"Frame around {target['name']}"
+        self.items.append(v)
         self.refresh()
         self.vlist.setCurrentRow(len(self.items) - 1)
         self.win.schedule_save()
@@ -3053,29 +5023,816 @@ class VisualizersTab(QWidget):
         self.status.setStyleSheet(f"color: {self.win.pal['ansi'][2] if on else self.win.pal['muted']};")
 
 
+# ── Panels tab ─────────────────────────────────────────────────────
+
+def desktop_dir():
+    try:
+        out = subprocess.run(["xdg-user-dir", "DESKTOP"], capture_output=True, text=True, timeout=3).stdout.strip()
+        if out and Path(out).is_dir():
+            return Path(out)
+    except (FileNotFoundError, subprocess.SubprocessError):
+        pass
+    return HOME / "Desktop"
+
+
+def copy_shortcuts(files, folder):
+    dest = Path(os.path.expanduser(folder))
+    dest.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for f in files:
+        f = Path(f)
+        target = dest / f.name
+        if f.is_file() and not target.exists():
+            shutil.copy2(f, target)
+            n += 1
+    return n
+
+
+class PanelPreview(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.panel = None
+        self.pal = None
+        self.wall = None
+        self.wall_path = None
+        self.items = []
+        self.icons = {}
+        self.folder = None
+        self.t = 0.0
+        self.setMinimumSize(380, 300)
+        self.timer = QTimer(self)
+        self.timer.setInterval(40)
+        self.timer.timeout.connect(self.tick)
+
+    def set_data(self, panel, p, wallpaper):
+        self.panel, self.pal = panel, p
+        if wallpaper != self.wall_path:
+            self.wall_path = wallpaper
+            self.wall = QPixmap(wallpaper) if wallpaper and Path(wallpaper).exists() else None
+        if panel and panel["kind"] == "launcher" and panel["folder"] != self.folder:
+            self.reload_items()
+        self.update()
+
+    def reload_items(self):
+        self.folder = self.panel["folder"]
+        self.items = launcher_items(self.folder)
+        self.icons = {it["path"]: icon_for_item(it) for it in self.items}
+        self.update()
+
+    def showEvent(self, e):
+        self.timer.start()
+        super().showEvent(e)
+
+    def hideEvent(self, e):
+        self.timer.stop()
+        super().hideEvent(e)
+
+    def tick(self):
+        self.t += 0.04
+        if self.panel and (self.panel["glow"] or self.panel["kind"] == "nowplaying"):
+            self.update()
+
+    def paintEvent(self, e):
+        p = self.pal
+        if not p:
+            return
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.Antialiasing)
+        r = self.rect()
+        if self.wall and not self.wall.isNull():
+            sc = self.wall.scaled(r.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+            qp.drawPixmap(0, 0, sc, (sc.width() - r.width()) // 2, (sc.height() - r.height()) // 2,
+                          r.width(), r.height())
+        else:
+            g = QLinearGradient(0, 0, r.width(), r.height())
+            g.setColorAt(0, QColor(mix(p["background"], "#000000", 0.3)))
+            g.setColorAt(1, QColor(mix(p["surface"], p["accent"], 0.3)))
+            qp.fillRect(r, g)
+        if not self.panel:
+            qp.setPen(QColor(p["foreground"]))
+            qp.drawText(r, Qt.AlignCenter, "Create or pick a panel")
+            return
+        panel = self.panel
+        items = self.items if panel["kind"] == "launcher" else []
+        _lay, full = panel_layout(panel, len(items))
+        m = GLOW_MARGIN
+        scale = min(1.0, (r.width() - 2 * m) / full.width(), (r.height() - 2 * m) / full.height())
+        area = QRectF(m, m, (r.width() - 2 * m) / scale, (r.height() - 2 * m) / scale)
+        pos = align_rect(panel["alignment"], 0, 0, full.width(), full.height(), area).topLeft()
+        length = 214.0
+        np = {"status": "Playing", "title": "Song title", "artist": "Artist name", "art": "",
+              "length": length, "position": (self.t * 4) % length}
+        glow = bass_level(fake_spectrum(24, self.t)) if panel["glow"] else 0.0
+        qp.scale(scale, scale)
+        paint_panel(qp, pos, panel, p, {"items": items, "icons": self.icons, "np": np, "glow": glow})
+        qp.end()
+
+
+class PanelsTab(QWidget):
+    CONTENT = {
+        "launcher": [("folder", "folder", "Shortcuts folder", None), ("columns", "int", "Columns", (1, 12, "")),
+                     ("icon_size", "int", "Icon size", (16, 160, " px")), ("labels", "bool", "Show names", None)],
+        "nowplaying": [("art_size", "int", "Album art size", (48, 320, " px")),
+                       ("progress", "bool", "Progress bar (click to seek)", None),
+                       ("controls", "bool", "Playback buttons", None)],
+    }
+    LOOK = [("name", "text", "Name", None), ("title", "text", "Title", None),
+            ("width", "int", "Width", (120, 2000, " px")), ("opacity", "int", "Background", (0, 100, " %")),
+            ("radius", "int", "Corner radius", (0, 60, " px")), ("padding", "int", "Padding", (4, 80, " px")),
+            ("border", "bool", "Outline", None), ("glow", "bool", "Glow with the bass (needs cava)", None)]
+    PLACE = [("alignment", "combo", "Position", ALIGNMENTS), ("gap_x", "int", "Offset  ↔", (-8000, 8000, " px")),
+             ("gap_y", "int", "Offset  ↕", (-8000, 8000, " px")), ("screen", "screen", "Screen", None),
+             ("x11", "bool", "Pin to exact position (runs through XWayland)", None),
+             ("autostart", "bool", "Start when I log in", None)]
+
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        self.cur = None
+        self.loading = False
+        self.inputs = {}
+        self.content_rows = {}
+        root = QHBoxLayout(self)
+        split = QSplitter()
+        root.addWidget(split)
+
+        left = QWidget()
+        lv = QVBoxLayout(left)
+        lv.setContentsMargins(0, 0, 0, 0)
+        lv.addWidget(section_label("Your panels"))
+        self.plist = QListWidget()
+        self.plist.currentRowChanged.connect(self.select)
+        lv.addWidget(self.plist, 1)
+        row = QHBoxLayout()
+        b_new = QToolButton()
+        b_new.setText("New ▾")
+        b_new.setPopupMode(QToolButton.InstantPopup)
+        m = QMenu(b_new)
+        for key, label in PANEL_KINDS:
+            m.addAction(label.replace("&", "&&")).triggered.connect(lambda *_, k=key: self.add(k))
+        b_new.setMenu(m)
+        b_dup = QPushButton("Duplicate")
+        b_dup.clicked.connect(self.duplicate)
+        b_del = QPushButton("Delete")
+        b_del.clicked.connect(self.delete)
+        for b in (b_new, b_dup, b_del):
+            row.addWidget(b)
+        lv.addLayout(row)
+        lv.addWidget(hint_label("Panels are clickable windows on your desktop, drawn by ThemeForge in your "
+                                "palette. The games launcher shows every shortcut in a folder; the now playing "
+                                "card shows album art with playback buttons."))
+        split.addWidget(left)
+
+        mid_scroll = QScrollArea()
+        mid_scroll.setWidgetResizable(True)
+        mid_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        mid = QWidget()
+        mv = QVBoxLayout(mid)
+        mv.setContentsMargins(4, 0, 12, 0)
+        mv.setSizeConstraint(QVBoxLayout.SetMinimumSize)
+        gb = QGroupBox("Content")
+        self.content_form = QFormLayout(gb)
+        for kind, fields in self.CONTENT.items():
+            for key, ftype, label, opts in fields:
+                w = self.make_input(key, ftype, opts)
+                if ftype == "bool":
+                    w.setText(label)
+                    self.content_form.addRow("", w)
+                else:
+                    self.content_form.addRow(label, w)
+                self.inputs[key] = w
+                self.content_rows[key] = kind
+        self.launcher_tools = QWidget()
+        tl = QVBoxLayout(self.launcher_tools)
+        tl.setContentsMargins(0, 4, 0, 0)
+        for label, fn in (("Copy game shortcuts from my Desktop", self.copy_from_desktop),
+                          ("Add apps or games from the app menu…", self.add_apps),
+                          ("Open the shortcuts folder", self.open_folder)):
+            b = QPushButton(label)
+            b.clicked.connect(fn)
+            tl.addWidget(b)
+        self.content_form.addRow("", self.launcher_tools)
+        mv.addWidget(gb)
+        for title, fields in (("Look", self.LOOK), ("Placement", self.PLACE)):
+            gb = QGroupBox(title)
+            f = QFormLayout(gb)
+            for key, ftype, label, opts in fields:
+                w = self.make_input(key, ftype, opts)
+                if ftype == "bool":
+                    w.setText(label)
+                    f.addRow("", w)
+                else:
+                    f.addRow(label, w)
+                self.inputs[key] = w
+            mv.addWidget(gb)
+        mv.addStretch()
+        mid_scroll.setWidget(mid)
+        split.addWidget(mid_scroll)
+
+        right = QWidget()
+        rv = QVBoxLayout(right)
+        rv.setContentsMargins(4, 0, 0, 0)
+        self.preview = PanelPreview()
+        rv.addWidget(self.preview, 1)
+        rv.addWidget(hint_label("Right-click a running panel for more options. While it runs, changes here show "
+                                "up on the desktop within a second."))
+        row = QHBoxLayout()
+        b_run = QPushButton("Run on desktop")
+        b_run.setObjectName("primary")
+        b_run.clicked.connect(self.run)
+        b_stop = QPushButton("Stop")
+        b_stop.clicked.connect(self.stop)
+        b_all = QPushButton("Stop all")
+        b_all.clicked.connect(self.stop_all)
+        for b in (b_run, b_stop, b_all):
+            row.addWidget(b)
+        row.addStretch()
+        self.status = QLabel()
+        row.addWidget(self.status)
+        rv.addLayout(row)
+        split.addWidget(right)
+        split.setSizes([260, 420, 580])
+
+        self.status_timer = QTimer(self)
+        self.status_timer.setInterval(3000)
+        self.status_timer.timeout.connect(self.refresh_status)
+        self.status_timer.start()
+
+    @property
+    def items(self):
+        return self.win.settings.setdefault("panels", [])
+
+    def make_input(self, key, kind, opts):
+        if kind == "text":
+            w = QLineEdit()
+            w.textEdited.connect(lambda val: self.set_field(key, val))
+        elif kind == "int":
+            w = spin(opts[0], opts[1], opts[2])
+            w.valueChanged.connect(lambda val: self.set_field(key, val))
+        elif kind == "bool":
+            w = QCheckBox()
+            w.toggled.connect(lambda val: self.set_field(key, val))
+        elif kind == "folder":
+            w = QWidget()
+            h = QHBoxLayout(w)
+            h.setContentsMargins(0, 0, 0, 0)
+            w.edit = QLineEdit()
+            w.edit.editingFinished.connect(lambda: self.set_field(key, w.edit.text().strip() or "~/Games"))
+            b = QPushButton("Browse…")
+            b.clicked.connect(self.browse_folder)
+            h.addWidget(w.edit, 1)
+            h.addWidget(b)
+        else:
+            w = QComboBox()
+            if kind == "screen":
+                w.addItem("Primary screen", "")
+                for sc in QGuiApplication.screens():
+                    w.addItem(f"{sc.name()}  ({sc.geometry().width()}×{sc.geometry().height()})", sc.name())
+            else:
+                for data, label in opts:
+                    w.addItem(label, data)
+            w.currentIndexChanged.connect(lambda i, box=w: self.set_field(key, box.itemData(i)))
+        return w
+
+    def refresh(self):
+        row = self.plist.currentRow()
+        self.plist.blockSignals(True)
+        self.plist.clear()
+        for x in self.items:
+            self.plist.addItem(x["name"])
+        self.plist.blockSignals(False)
+        if self.items:
+            self.plist.setCurrentRow(min(max(row, 0), len(self.items) - 1))
+        self.select(self.plist.currentRow())
+
+    def refresh_preview(self):
+        self.preview.set_data(self.cur, self.win.pal, self.win.settings.get("wallpaper"))
+
+    def select(self, row):
+        self.cur = self.items[row] if 0 <= row < len(self.items) else None
+        self.loading = True
+        kind = self.cur["kind"] if self.cur else None
+        for key, w in self.inputs.items():
+            w.setEnabled(self.cur is not None)
+            if key in self.content_rows:
+                self.content_form.setRowVisible(w, self.content_rows[key] == kind)
+            if not self.cur:
+                continue
+            val = self.cur[key]
+            if isinstance(w, QLineEdit):
+                w.setText(val)
+            elif isinstance(w, QSpinBox):
+                w.setValue(int(val))
+            elif isinstance(w, QCheckBox):
+                w.setChecked(bool(val))
+            elif isinstance(w, QComboBox):
+                idx = w.findData(val)
+                if idx < 0 and key == "screen":
+                    w.addItem(f"{val} (not connected)", val)
+                    idx = w.count() - 1
+                w.setCurrentIndex(max(0, idx))
+            else:
+                w.edit.setText(val)
+        self.content_form.setRowVisible(self.launcher_tools, kind == "launcher")
+        self.loading = False
+        self.refresh_preview()
+        self.refresh_status()
+
+    def set_field(self, key, val):
+        if self.loading or not self.cur:
+            return
+        self.cur[key] = val
+        if key == "name":
+            item = self.plist.currentItem()
+            if item:
+                item.setText(val)
+        if key == "autostart":
+            update_autostart(self.win.settings)
+        if key == "folder":
+            self.preview.folder = None
+        self.refresh_preview()
+        self.win.schedule_save()
+
+    def browse_folder(self):
+        if not self.cur:
+            return
+        start = os.path.expanduser(self.cur["folder"])
+        path = QFileDialog.getExistingDirectory(self, "Folder with game shortcuts",
+                                                start if Path(start).is_dir() else str(HOME))
+        if path:
+            path = "~" + path[len(str(HOME)):] if path.startswith(str(HOME)) else path
+            self.inputs["folder"].edit.setText(path)
+            self.set_field("folder", path)
+
+    def copy_from_desktop(self):
+        if not self.cur:
+            return
+        files = sorted(desktop_dir().glob("*.desktop"))
+        n = copy_shortcuts(files, self.cur["folder"])
+        self.preview.reload_items()
+        QMessageBox.information(self, "Shortcuts copied",
+                                f"Copied {n} shortcut(s) into {self.cur['folder']}.\n\n"
+                                "The originals are still on your Desktop - delete them there if you want a "
+                                "clean desktop." if n else
+                                f"No new .desktop shortcuts found on {desktop_dir()}.")
+
+    def add_apps(self):
+        if not self.cur:
+            return
+        start = HOME / ".local" / "share" / "applications"
+        files, _ = QFileDialog.getOpenFileNames(self, "Pick apps or games (Steam games live here)",
+                                                str(start if start.exists() else "/usr/share/applications"),
+                                                "App shortcuts (*.desktop)")
+        if files:
+            copy_shortcuts(files, self.cur["folder"])
+            self.preview.reload_items()
+
+    def open_folder(self):
+        if self.cur:
+            d = Path(os.path.expanduser(self.cur["folder"]))
+            d.mkdir(parents=True, exist_ok=True)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(d)))
+
+    def add(self, kind):
+        self.items.append(panel_template(kind))
+        self.refresh()
+        self.plist.setCurrentRow(len(self.items) - 1)
+        self.win.schedule_save()
+
+    def duplicate(self):
+        if not self.cur:
+            return
+        x = copy.deepcopy(self.cur)
+        x["id"] = uuid.uuid4().hex[:8]
+        x["name"] += " copy"
+        self.items.append(x)
+        self.refresh()
+        self.plist.setCurrentRow(len(self.items) - 1)
+        self.win.schedule_save()
+
+    def delete(self):
+        if not self.cur:
+            return
+        if QMessageBox.question(self, "Delete panel", f"Delete “{self.cur['name']}”?") != QMessageBox.Yes:
+            return
+        stop_panel(self.cur["id"])
+        for v in self.win.settings.get("visualizers", []):
+            if v.get("wrap") == self.cur["id"]:
+                v["wrap"] = ""
+        self.items.remove(self.cur)
+        self.cur = None
+        update_autostart(self.win.settings)
+        self.refresh()
+        self.win.schedule_save()
+
+    def run(self):
+        if not self.cur:
+            return
+        if self.cur["kind"] == "nowplaying" and not shutil.which("playerctl"):
+            QMessageBox.information(self, "playerctl needed", "The now playing card reads your music player "
+                                    "through playerctl.\n\nInstall it with:\n    sudo dnf install playerctl")
+        if self.cur["kind"] == "launcher":
+            Path(os.path.expanduser(self.cur["folder"])).mkdir(parents=True, exist_ok=True)
+        self.win.save_now()
+        if not panel_pids(self.cur["id"]):
+            start_panel(self.cur)
+        QTimer.singleShot(1500, self.refresh_status)
+
+    def stop(self):
+        if self.cur:
+            stop_panel(self.cur["id"])
+            QTimer.singleShot(600, self.refresh_status)
+
+    def stop_all(self):
+        for x in self.items:
+            stop_panel(x["id"])
+        QTimer.singleShot(600, self.refresh_status)
+
+    def refresh_status(self):
+        if not self.isVisible():
+            return
+        running = {x["id"] for x in self.items if panel_pids(x["id"])}
+        for i, x in enumerate(self.items):
+            item = self.plist.item(i)
+            if item:
+                item.setText(("●  " if x["id"] in running else "") + x["name"])
+        on = bool(self.cur and self.cur["id"] in running)
+        self.status.setText("● running" if on else "○ not running")
+        self.status.setStyleSheet(f"color: {self.win.pal['ansi'][2] if on else self.win.pal['muted']};")
+
+
+# ── Profiles tab ───────────────────────────────────────────────────
+
+class SwatchStrip(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.cols = []
+        self.setFixedHeight(22)
+
+    def set_colors(self, cols):
+        self.cols = list(cols)
+        self.update()
+
+    def paintEvent(self, e):
+        if not self.cols:
+            return
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.Antialiasing)
+        w = self.width() / len(self.cols)
+        for i, c in enumerate(self.cols):
+            qp.fillRect(QRectF(i * w, 0, w + 0.5, self.height()), QColor(c))
+        qp.end()
+
+
+def palette_strip(p):
+    return [p["background"], p["surface"], p["accent"], p["accent2"]] + p["ansi"][1:7] + [p["foreground"]]
+
+
+class ProfilesTab(QWidget):
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        self.loading = False
+        outer = QHBoxLayout(self)
+        split = QSplitter()
+        outer.addWidget(split)
+
+        # profiles
+        left = QWidget()
+        lv = QVBoxLayout(left)
+        lv.setContentsMargins(0, 0, 10, 0)
+        gb = QGroupBox("Desktop profiles")
+        v = QVBoxLayout(gb)
+        v.addWidget(hint_label("A profile remembers your colors, wallpaper, what Apply changes, album-art mode, "
+                               "and which widgets, visualizers and panels are running - so “Gaming” and “Chill” "
+                               "are one click apart."))
+        self.plist = QListWidget()
+        self.plist.setIconSize(self.plist.iconSize() * 1.4)
+        self.plist.currentRowChanged.connect(self.show_details)
+        self.plist.itemDoubleClicked.connect(lambda *_: self.switch())
+        v.addWidget(self.plist, 1)
+        self.details = hint_label("")
+        v.addWidget(self.details)
+        self.strip = SwatchStrip()
+        v.addWidget(self.strip)
+        row = QHBoxLayout()
+        b_switch = QPushButton("Switch to it")
+        b_switch.setObjectName("primary")
+        b_switch.clicked.connect(self.switch)
+        b_save = QPushButton("Save current setup as…")
+        b_save.clicked.connect(self.save_new)
+        row.addWidget(b_switch)
+        row.addWidget(b_save)
+        v.addLayout(row)
+        row = QHBoxLayout()
+        for label, fn in (("Update with current setup", self.update_selected), ("Rename…", self.rename),
+                          ("Delete", self.delete)):
+            b = QPushButton(label)
+            b.clicked.connect(fn)
+            row.addWidget(b)
+        v.addLayout(row)
+        lv.addWidget(gb, 1)
+
+        gb = QGroupBox("Tray icon && keyboard shortcut")
+        v = QVBoxLayout(gb)
+        self.tray_cb = QCheckBox("Show ThemeForge in the system tray (switch profiles and themes from there)")
+        self.tray_cb.toggled.connect(self.toggle_tray)
+        v.addWidget(self.tray_cb)
+        b_short = QPushButton("Set up a keyboard shortcut for “Next profile”…")
+        b_short.clicked.connect(self.setup_shortcut)
+        v.addWidget(b_short)
+        v.addWidget(hint_label("Middle-click the tray icon for the next profile. From a terminal or script: "
+                               "themeforge --profile Gaming, themeforge --next-profile"))
+        lv.addWidget(gb)
+        split.addWidget(left)
+
+        # album-art mode
+        right = QWidget()
+        rv = QVBoxLayout(right)
+        rv.setContentsMargins(10, 0, 0, 0)
+        gb = QGroupBox("Album-art mode")
+        v = QVBoxLayout(gb)
+        self.album_cb = QCheckBox("Recolor my desktop to match the album art of whatever is playing")
+        self.album_cb.setStyleSheet("font-weight: bold;")
+        self.album_cb.toggled.connect(lambda on: self.set_album("enabled", on))
+        v.addWidget(self.album_cb)
+        v.addWidget(hint_label("Works with any player that shows up in playerctl - Spotify, browsers, mpv, "
+                               "Strawberry, Elisa… Your saved theme isn't touched; ThemeForge goes back to it when "
+                               "you turn this off."))
+        v.addWidget(section_label("What follows the album art"))
+        grid = QGridLayout()
+        self.album_targets = {}
+        for i, (key, label) in enumerate(ALBUM_TARGETS):
+            cb = QCheckBox(label.replace("&", "&&"))
+            cb.toggled.connect(lambda on, k=key: self.toggle_album_target(k, on))
+            self.album_targets[key] = cb
+            grid.addWidget(cb, i // 2, i % 2)
+        v.addLayout(grid)
+        self.album_light = QCheckBox("Use light palettes")
+        self.album_light.toggled.connect(lambda on: self.set_album("light", on))
+        self.album_revert = QCheckBox("Go back to my own theme when the music stops (after 15 seconds)")
+        self.album_revert.toggled.connect(lambda on: self.set_album("revert", on))
+        v.addWidget(self.album_light)
+        v.addWidget(self.album_revert)
+        v.addWidget(section_label("Right now"))
+        self.album_status = QLabel("Off")
+        self.album_status.setWordWrap(True)
+        v.addWidget(self.album_status)
+        self.album_strip = SwatchStrip()
+        v.addWidget(self.album_strip)
+        v.addStretch()
+        rv.addWidget(gb, 1)
+        split.addWidget(right)
+        split.setSizes([620, 620])
+
+        self.timer = QTimer(self)
+        self.timer.setInterval(2500)
+        self.timer.timeout.connect(self.refresh_album_status)
+        self.timer.start()
+
+    @property
+    def s(self):
+        return self.win.settings
+
+    def refresh(self):
+        self.loading = True
+        row = self.plist.currentRow()
+        self.plist.clear()
+        for x in self.s["profiles"]:
+            cur = x["name"] == self.s.get("current_profile")
+            self.plist.addItem(x["name"] + ("   ★ active" if cur else ""))
+            self.plist.item(self.plist.count() - 1).setIcon(palette_icon(x["palette"], 48))
+        if self.s["profiles"]:
+            self.plist.setCurrentRow(min(max(row, 0), len(self.s["profiles"]) - 1))
+        self.show_details(self.plist.currentRow())
+        al = self.s["album"]
+        self.album_cb.setChecked(bool(al.get("enabled")))
+        for key, cb in self.album_targets.items():
+            cb.setChecked(key in al.get("targets", []))
+        self.album_light.setChecked(bool(al.get("light")))
+        self.album_revert.setChecked(bool(al.get("revert", True)))
+        self.tray_cb.setChecked(bool(self.s.get("tray")))
+        self.loading = False
+        self.refresh_album_status()
+
+    def selected(self):
+        i = self.plist.currentRow()
+        return self.s["profiles"][i] if 0 <= i < len(self.s["profiles"]) else None
+
+    def show_details(self, _row):
+        x = self.selected()
+        if not x:
+            self.details.setText("No profiles yet. Set your desktop up the way you like it, then "
+                                 "“Save current setup as…”.")
+            self.strip.set_colors([])
+            return
+        bits = [f"Palette: {x['palette'].get('name', 'custom')}"]
+        for key, word in (("widgets", "widget"), ("visualizers", "visualizer"), ("panels", "panel")):
+            n = len(x.get(key, []))
+            bits.append(f"{n} {word}{'s' if n != 1 else ''}")
+        if x.get("album"):
+            bits.append("album-art mode on")
+        if x.get("wallpaper"):
+            bits.append(f"wallpaper {Path(x['wallpaper']).name}")
+        self.details.setText(" · ".join(bits))
+        self.strip.set_colors(palette_strip(x["palette"]))
+
+    def save_new(self):
+        name, ok = QInputDialog.getText(self, "Save profile", "Profile name (e.g. Gaming, Chill, Work):")
+        name = (name or "").strip()
+        if not ok or not name:
+            return
+        if any(x["name"] == name for x in self.s["profiles"]) and QMessageBox.question(
+                self, "Save profile", f"Replace “{name}”?") != QMessageBox.Yes:
+            return
+        save_profile(self.s, name)
+        self.win.save_now()
+        self.refresh()
+        self.win.statusBar().showMessage(f"Saved profile “{name}”", 5000)
+
+    def update_selected(self):
+        x = self.selected()
+        if x:
+            save_profile(self.s, x["name"])
+            self.win.save_now()
+            self.refresh()
+
+    def rename(self):
+        x = self.selected()
+        if not x:
+            return
+        name, ok = QInputDialog.getText(self, "Rename profile", "New name:", text=x["name"])
+        name = (name or "").strip()
+        if ok and name and name != x["name"]:
+            if self.s.get("current_profile") == x["name"]:
+                self.s["current_profile"] = name
+            x["name"] = name
+            self.win.save_now()
+            self.refresh()
+
+    def delete(self):
+        x = self.selected()
+        if x and QMessageBox.question(self, "Delete profile", f"Delete “{x['name']}”?") == QMessageBox.Yes:
+            self.s["profiles"].remove(x)
+            if self.s.get("current_profile") == x["name"]:
+                self.s["current_profile"] = ""
+            self.win.save_now()
+            self.refresh()
+
+    def switch(self):
+        x = self.selected()
+        if not x:
+            return
+        log = self.win.targets_tab.append_log
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            switch_profile(self.s, x["name"], log)
+        except Exception as e:
+            QMessageBox.warning(self, "Switch profile", str(e))
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.win.note_saved()
+        self.win.reload_everything(from_disk=False)
+        self.win.statusBar().showMessage(f"Switched to “{x['name']}”", 6000)
+
+    def set_album(self, key, val):
+        if self.loading:
+            return
+        self.s["album"][key] = val
+        self.service_settings_changed()
+
+    def toggle_album_target(self, key, on):
+        if self.loading:
+            return
+        t = [k for k in self.s["album"].get("targets", []) if k != key]
+        if on:
+            t.append(key)
+        self.s["album"]["targets"] = t
+        self.service_settings_changed()
+
+    def toggle_tray(self, on):
+        if self.loading:
+            return
+        self.s["tray"] = on
+        self.service_settings_changed()
+
+    def service_settings_changed(self):
+        self.win.save_now()
+        update_autostart(self.s)
+        if service_wanted(self.s):
+            if self.s["album"].get("enabled") and not shutil.which("playerctl"):
+                QMessageBox.information(self, "playerctl needed", "Album-art mode reads your music player "
+                                        "through playerctl.\n\nInstall it with:\n    sudo dnf install playerctl")
+            ensure_service()
+
+    def setup_shortcut(self):
+        path = install_shortcut_entry()
+        QMessageBox.information(
+            self, "Keyboard shortcut",
+            "Added “ThemeForge: Next profile” to your app menu.\n\n"
+            "System Settings will open on the Shortcuts page. There:\n"
+            "  1. Click “Add New” → “Application…”\n"
+            "  2. Pick “ThemeForge: Next profile”\n"
+            "  3. Click its shortcut button and press the keys you want (e.g. Meta+Shift+T)\n\n"
+            f"({path})")
+        subprocess.Popen(["systemsettings", "kcm_keys"], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def refresh_album_status(self):
+        if not self.isVisible():
+            return
+        al = self.s["album"]
+        if not al.get("enabled"):
+            self.album_status.setText("Off")
+            self.album_strip.set_colors([])
+            return
+        running = bool(tf_pids("--service"))
+        try:
+            st = json.loads(ALBUM_STATUS_FILE.read_text())
+        except Exception:
+            st = {}
+        if not running:
+            self.album_status.setText("Starting…")
+        elif st.get("state") == "on":
+            self.album_status.setText(f"Matching <b>{st.get('title') or 'Unknown'}</b> — {st.get('artist') or ''}")
+            self.album_strip.set_colors(palette_strip(st["palette"]) if valid_palette(st.get("palette", {}))
+                                        else [])
+        else:
+            self.album_status.setText("Waiting for music…")
+            self.album_strip.set_colors([])
+
+
 # ── Targets tab ────────────────────────────────────────────────────
 
 class TargetsTab(QWidget):
     def __init__(self, win):
         super().__init__()
         self.win = win
-        v = QVBoxLayout(self)
+        outer = QHBoxLayout(self)
+        split = QSplitter()
+        outer.addWidget(split)
+
+        # left: the targets, scrollable
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setMinimumWidth(420)
+        inner = QWidget()
+        lv = QVBoxLayout(inner)
+        lv.setContentsMargins(0, 0, 10, 0)
+        lv.setSizeConstraint(QVBoxLayout.SetMinimumSize)
         gb = QGroupBox("What “Apply to desktop” changes")
         g = QGridLayout(gb)
-        g.setColumnStretch(1, 1)
+        g.setColumnStretch(0, 1)
+        g.setVerticalSpacing(2)
         self.checks = {}
         for i, (key, name, desc, exe, _fn) in enumerate(TARGETS):
-            cb = QCheckBox(name)
+            cb = QCheckBox(name.replace("&", "&&"))
             cb.setStyleSheet("font-weight: bold;")
             cb.toggled.connect(lambda on, k=key: self.toggle(k, on))
             self.checks[key] = cb
-            found = shutil.which(exe) is not None
-            st = QLabel("installed" if found else f"{exe} not found")
-            st.setObjectName("muted")
-            g.addWidget(cb, i, 0)
-            g.addWidget(hint_label(desc), i, 1)
-            g.addWidget(st, i, 2)
+            ok, why = target_available(exe)
+            st = QLabel("" if ok else "not installed")
+            st.setObjectName("warn")
+            st.setToolTip(why)
+            cb.setToolTip(desc)
+            g.addWidget(cb, i * 2, 0)
+            g.addWidget(st, i * 2, 1, Qt.AlignRight)
+            d = hint_label(desc)
+            d.setContentsMargins(26, 0, 0, 8)
+            g.addWidget(d, i * 2 + 1, 0, 1, 2)
+        lv.addWidget(gb)
+        lv.addStretch()
+        scroll.setWidget(inner)
+        split.addWidget(scroll)
+
+        # right: options, actions, log, updates
+        right = QWidget()
+        v = QVBoxLayout(right)
+        v.setContentsMargins(10, 0, 0, 0)
+        gb = QGroupBox("Options")
+        f = QFormLayout(gb)
+        self.icon_box = QComboBox()
+        self.icon_box.addItem("Keep my current icon theme", "")
+        for name in sorted(installed_icon_themes(), key=str.lower):
+            self.icon_box.addItem(name, name)
+        self.icon_box.currentIndexChanged.connect(
+            lambda i: self.set_opt("icon_theme", self.icon_box.itemData(i)))
+        f.addRow("Icon theme", self.icon_box)
+        self.papirus = QCheckBox("Recolor Papirus folders to match the accent")
+        self.papirus.toggled.connect(lambda on: self.set_opt("papirus_folders", on))
+        f.addRow("", self.papirus)
+        self.kde_accent = QCheckBox("Set the KDE accent color too")
+        self.kde_accent.toggled.connect(lambda on: self.set_opt("kde_accent", on))
+        f.addRow("", self.kde_accent)
+        clients = discord_clients()
+        f.addRow("Discord", QLabel(", ".join(n for n, _ in clients) if clients else "no theme-capable client found"))
+        b_exports = QPushButton("Open exported themes folder")
+        b_exports.clicked.connect(lambda *_: (EXPORT_DIR.mkdir(parents=True, exist_ok=True),
+                                              QDesktopServices.openUrl(QUrl.fromLocalFile(str(EXPORT_DIR)))))
+        f.addRow("Vivaldi", b_exports)
         v.addWidget(gb)
+
         row = QHBoxLayout()
         b_apply = QPushButton("Apply to desktop")
         b_apply.setObjectName("primary")
@@ -3083,7 +5840,7 @@ class TargetsTab(QWidget):
         b_restore = QPushButton("Restore my original files…")
         b_restore.clicked.connect(self.restore)
         b_folder = QPushButton("Open ThemeForge folder")
-        b_folder.clicked.connect(lambda *_: subprocess.Popen(["xdg-open", str(CFG_DIR)]))
+        b_folder.clicked.connect(lambda *_: QDesktopServices.openUrl(QUrl.fromLocalFile(str(CFG_DIR))))
         row.addWidget(b_apply)
         row.addWidget(b_restore)
         row.addWidget(b_folder)
@@ -3095,8 +5852,10 @@ class TargetsTab(QWidget):
         self.log.setFont(QFontDatabase.systemFont(QFontDatabase.FixedFont))
         v.addWidget(self.log, 1)
         v.addWidget(hint_label(
-            "Before changing kitty.conf, cava's config, konsolerc or a conky file for the first time, "
-            f"ThemeForge copies the original into {ORIG_DIR}. “Restore” puts those back."))
+            "Before changing any of your config files for the first time, ThemeForge copies the original "
+            f"into {ORIG_DIR}. “Restore” puts those back, plus your KDE colors, accent and icon theme."))
+        split.addWidget(right)
+        split.setSizes([560, 720])
 
         gb = QGroupBox("Updates")
         row = QHBoxLayout(gb)
@@ -3121,11 +5880,27 @@ class TargetsTab(QWidget):
         self.win.settings["check_updates"] = on
         self.win.schedule_save()
 
+    def set_opt(self, key, val):
+        self.win.settings[key] = val
+        self.win.schedule_save()
+
     def refresh(self):
+        st = self.win.settings
         for key, cb in self.checks.items():
             cb.blockSignals(True)
-            cb.setChecked(bool(self.win.settings["targets"].get(key)))
+            cb.setChecked(bool(st["targets"].get(key)))
             cb.blockSignals(False)
+        for w, val in ((self.papirus, st.get("papirus_folders", True)), (self.kde_accent, st.get("kde_accent", True))):
+            w.blockSignals(True)
+            w.setChecked(bool(val))
+            w.blockSignals(False)
+        self.icon_box.blockSignals(True)
+        idx = self.icon_box.findData(st.get("icon_theme", ""))
+        if idx < 0:
+            self.icon_box.addItem(f"{st['icon_theme']} (not installed)", st["icon_theme"])
+            idx = self.icon_box.count() - 1
+        self.icon_box.setCurrentIndex(idx)
+        self.icon_box.blockSignals(False)
         self.auto_update.blockSignals(True)
         self.auto_update.setChecked(bool(self.win.settings.get("check_updates", True)))
         self.auto_update.blockSignals(False)
@@ -3148,6 +5923,86 @@ class TargetsTab(QWidget):
         self.log.appendPlainText(f"— Restoring originals at {time.strftime('%H:%M:%S')} —")
         restore_originals(self.win.settings, self.append_log)
         self.win.save_now()
+
+
+class CommunityDialog(QDialog):
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win
+        self.themes = []
+        self.setWindowTitle("Community themes")
+        self.resize(640, 560)
+        v = QVBoxLayout(self)
+        v.addWidget(hint_label(f"Themes shared by other ThemeForge users in github.com/{GITHUB_REPO}. "
+                               "Installing one adds it to your Theme list - nothing changes until you Apply."))
+        self.status = QLabel("Loading…")
+        self.status.setObjectName("muted")
+        v.addWidget(self.status)
+        self.list = QListWidget()
+        self.list.setIconSize(QSize(180, 28))
+        self.list.setWordWrap(True)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.list.itemDoubleClicked.connect(lambda *_: self.install(True))
+        v.addWidget(self.list, 1)
+        row = QHBoxLayout()
+        b_share = QPushButton("How to share yours")
+        b_share.clicked.connect(lambda *_: QDesktopServices.openUrl(
+            QUrl(f"https://github.com/{GITHUB_REPO}/blob/main/CONTRIBUTING.md")))
+        row.addWidget(b_share)
+        row.addStretch()
+        b_install = QPushButton("Install")
+        b_install.clicked.connect(lambda *_: self.install(False))
+        b_use = QPushButton("Install && use")
+        b_use.setObjectName("primary")
+        b_use.clicked.connect(lambda *_: self.install(True))
+        b_close = QPushButton("Close")
+        b_close.clicked.connect(self.reject)
+        for b in (b_install, b_use, b_close):
+            row.addWidget(b)
+        v.addLayout(row)
+        win.run_in_thread(fetch_community_themes, self.loaded)
+
+    def loaded(self, themes, err):
+        if err:
+            self.status.setText(f"Couldn't load community themes: {err}")
+            return
+        self.themes = themes or []
+        mine = set(list_user_themes())
+        self.status.setText(f"{len(self.themes)} themes")
+        for t in self.themes:
+            pm = QPixmap(180, 28)
+            pm.fill(Qt.transparent)
+            qp = QPainter(pm)
+            cols = palette_strip(t["palette"])
+            w = 180 / len(cols)
+            for i, c in enumerate(cols):
+                qp.fillRect(QRectF(i * w, 0, w + 0.5, 28), QColor(c))
+            qp.end()
+            label = t["name"] + (f"  ·  by {t['author']}" if t["author"] else "")
+            if t["name"] in mine:
+                label += "  ·  installed"
+            if t["description"]:
+                label += f"\n{t['description']}"
+            item = QListWidgetItem(QIcon(pm), label)
+            self.list.addItem(item)
+        if self.themes:
+            self.list.setCurrentRow(0)
+
+    def install(self, use):
+        i = self.list.currentRow()
+        if not 0 <= i < len(self.themes):
+            return
+        t = self.themes[i]
+        if t["name"] in list_user_themes():
+            name = t["name"]
+        else:
+            name = self.win.install_theme(t["palette"], t["name"])
+        self.win.populate_presets(self.win.pal.get("name"))
+        if use:
+            self.win.set_palette(load_user_theme(name))
+            self.accept()
+        else:
+            self.list.item(i).setText(self.list.item(i).text().split("\n")[0] + "  ·  installed")
 
 
 class _Bridge(QObject):
@@ -3187,8 +6042,20 @@ class MainWindow(QMainWindow):
         b_save.clicked.connect(self.save_theme)
         self.b_del = QPushButton("Delete")
         self.b_del.clicked.connect(self.delete_theme)
+        b_more = QToolButton()
+        b_more.setText("More ▾")
+        b_more.setPopupMode(QToolButton.InstantPopup)
+        mm = QMenu(b_more)
+        mm.addAction("Browse community themes…").triggered.connect(self.browse_community)
+        mm.addAction("Import a theme file…").triggered.connect(self.import_theme)
+        mm.addAction("Export this theme…").triggered.connect(self.export_theme)
+        mm.addSeparator()
+        mm.addAction("Share your theme on GitHub").triggered.connect(lambda *_: QDesktopServices.openUrl(
+            QUrl(f"https://github.com/{GITHUB_REPO}/blob/main/CONTRIBUTING.md")))
+        b_more.setMenu(mm)
         top.addWidget(b_save)
         top.addWidget(self.b_del)
+        top.addWidget(b_more)
         top.addSpacing(10)
         b_apply = QPushButton("Apply to desktop")
         b_apply.setObjectName("primary")
@@ -3222,10 +6089,14 @@ class MainWindow(QMainWindow):
         self.colors_tab = ColorsTab(self)
         self.widgets_tab = WidgetsTab(self)
         self.vis_tab = VisualizersTab(self)
+        self.panels_tab = PanelsTab(self)
+        self.profiles_tab = ProfilesTab(self)
         self.targets_tab = TargetsTab(self)
         self.tabs.addTab(self.colors_tab, "Colors")
         self.tabs.addTab(self.widgets_tab, "Widgets")
         self.tabs.addTab(self.vis_tab, "Visualizers")
+        self.tabs.addTab(self.panels_tab, "Panels")
+        self.tabs.addTab(self.profiles_tab, "Profiles")
         self.tabs.addTab(self.targets_tab, "Apply && targets")
         v.addWidget(self.tabs, 1)
         self.setCentralWidget(central)
@@ -3239,12 +6110,15 @@ class MainWindow(QMainWindow):
         self.save_timer.setInterval(800)
         self.save_timer.timeout.connect(self.save_now)
 
+        self.own_mtime = _mtime(SETTINGS_FILE)
+        self.ext_timer = QTimer(self)
+        self.ext_timer.setInterval(1500)
+        self.ext_timer.timeout.connect(self.check_external_changes)
+        self.ext_timer.start()
+
         self.populate_presets(self.pal.get("name"))
         self.restyle()
-        self.colors_tab.refresh()
-        self.widgets_tab.refresh()
-        self.vis_tab.refresh()
-        self.targets_tab.refresh()
+        self.refresh_tabs()
         self.statusBar().showMessage(f"ThemeForge {VERSION} - edits are previewed here; "
                                      "nothing on your desktop changes until you Apply.")
         QTimer.singleShot(2500, self.maybe_check_updates)
@@ -3261,7 +6135,7 @@ class MainWindow(QMainWindow):
         self.palette_changed()
 
     def mark_custom(self):
-        if self.pal.get("name") in PRESETS or self.pal.get("name") in self.user_theme_names():
+        if self.pal.get("name") in PRESETS or self.pal.get("name") in list_user_themes():
             self.pal["name"] = self.pal["name"] + " (edited)"
         self.preset_box.setCurrentIndex(-1)
 
@@ -3286,10 +6160,34 @@ class MainWindow(QMainWindow):
         self.colors_tab.refresh()
         self.palette_changed()
 
+    def refresh_tabs(self):
+        for tab in (self.colors_tab, self.widgets_tab, self.vis_tab, self.panels_tab, self.profiles_tab,
+                    self.targets_tab):
+            tab.refresh()
+
+    def reload_everything(self, from_disk=True):
+        if from_disk:
+            self.settings = load_settings()
+            self.own_mtime = _mtime(SETTINGS_FILE)
+        self.populate_presets(self.pal.get("name"))
+        self.restyle()
+        self.refresh_tabs()
+
+    def note_saved(self):
+        self.own_mtime = _mtime(SETTINGS_FILE)
+
+    def check_external_changes(self):
+        """The tray, a shortcut or album-art mode may have changed the settings file."""
+        m = _mtime(SETTINGS_FILE)
+        if m and m != self.own_mtime and not self.save_timer.isActive():
+            self.reload_everything()
+            self.statusBar().showMessage("Picked up changes made outside this window.", 4000)
+
     def palette_changed(self):
         self.colors_tab.preview.set_palette(self.pal)
         self.widgets_tab.refresh_preview()
         self.vis_tab.refresh_preview()
+        self.panels_tab.refresh_preview()
         self.widgets_tab.build_block_form()
         self.qss_timer.start()
         self.schedule_save()
@@ -3298,16 +6196,13 @@ class MainWindow(QMainWindow):
         QApplication.instance().setStyleSheet(app_qss(self.pal))
 
     # ── presets / saved themes
-    def user_theme_names(self):
-        return [f.stem for f in sorted(THEMES_DIR.glob("*.json"))] if THEMES_DIR.exists() else []
-
     def populate_presets(self, select=None):
         box = self.preset_box
         box.blockSignals(True)
         box.clear()
         for name in PRESETS:
             box.addItem(name, ("builtin", name))
-        users = self.user_theme_names()
+        users = list_user_themes()
         if users:
             box.insertSeparator(box.count())
             for name in users:
@@ -3331,13 +6226,9 @@ class MainWindow(QMainWindow):
             p = copy.deepcopy(PRESETS[name])
         else:
             try:
-                p = json.loads((THEMES_DIR / f"{name}.json").read_text())
-                p["name"] = name
+                p = load_user_theme(name)
             except Exception as e:
                 QMessageBox.warning(self, "ThemeForge", f"Couldn't load that theme: {e}")
-                return
-            if not valid_palette(p):
-                QMessageBox.warning(self, "ThemeForge", "That theme file is missing some colors.")
                 return
         self.set_palette(p)
 
@@ -3364,6 +6255,52 @@ class MainWindow(QMainWindow):
         if QMessageBox.question(self, "Delete theme", f"Delete saved theme “{d[1]}”?") == QMessageBox.Yes:
             (THEMES_DIR / f"{d[1]}.json").unlink(missing_ok=True)
             self.populate_presets(None)
+
+    # ── sharing themes
+    def install_theme(self, p, name=None):
+        name = re.sub(r"[/\\:*?\"<>|]", "", name or p.get("name") or "Imported").strip() or "Imported"
+        THEMES_DIR.mkdir(parents=True, exist_ok=True)
+        base, n = name, 2
+        while (THEMES_DIR / f"{name}.json").exists():
+            name = f"{base} {n}"
+            n += 1
+        p = copy.deepcopy(p)
+        p["name"] = name
+        (THEMES_DIR / f"{name}.json").write_text(json.dumps(p, indent=2))
+        return name
+
+    def import_theme(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Import a ThemeForge theme", str(HOME), "Themes (*.json)")
+        if not path:
+            return
+        try:
+            data = json.loads(Path(path).read_text())
+            p = data.get("palette", data)
+            p.setdefault("name", data.get("name") or Path(path).stem)
+            if "gradient" not in p and all(k in p for k, _ in ROLES) and len(p.get("ansi", [])) == 16:
+                p["gradient"] = default_gradient(p)
+            if not valid_palette(p):
+                raise ValueError("it isn't a ThemeForge theme (some colors are missing)")
+        except Exception as e:
+            QMessageBox.warning(self, "Import theme", f"Couldn't import {Path(path).name}:\n{e}")
+            return
+        name = self.install_theme(p)
+        self.set_palette(load_user_theme(name))
+        self.statusBar().showMessage(f"Imported “{name}”", 5000)
+
+    def export_theme(self):
+        name = self.pal.get("name", "My theme").replace(" (edited)", "")
+        fname = re.sub(r"[^\w -]", "", name).strip() or "theme"
+        path, _ = QFileDialog.getSaveFileName(self, "Export this theme", str(HOME / f"{fname}.json"),
+                                              "Themes (*.json)")
+        if path:
+            author = self.settings.get("theme_author", "")
+            out = {"name": name, "author": author, "description": "", "palette": self.pal}
+            Path(path).write_text(json.dumps(out, indent=2))
+            self.statusBar().showMessage(f"Exported to {path}", 6000)
+
+    def browse_community(self):
+        CommunityDialog(self).exec()
 
     # ── applying / saving
     def apply_desktop(self):
@@ -3428,8 +6365,13 @@ class MainWindow(QMainWindow):
         if not manual and rel["version"] == self.settings.get("skip_version"):
             return
         self.pending_release = rel
-        self.banner_text.setText(f"<b>ThemeForge {rel['version']}</b> is out — you have {VERSION}.")
-        self.banner_update_btn.setEnabled(True)
+        if is_system_install():
+            self.banner_text.setText(f"<b>ThemeForge {rel['version']}</b> is out — you have {VERSION}. "
+                                     "Update it with <code>sudo dnf upgrade themeforge</code>.")
+            self.banner_update_btn.hide()
+        else:
+            self.banner_text.setText(f"<b>ThemeForge {rel['version']}</b> is out — you have {VERSION}.")
+            self.banner_update_btn.setEnabled(True)
         self.banner.show()
 
     def open_release(self):
@@ -3467,18 +6409,32 @@ class MainWindow(QMainWindow):
 
     def restart(self):
         self.save_now()
-        for v in self.settings.get("visualizers", []):   # running visualizers use the old code
+        # running windows and the service are still the old code - restart them too
+        for v in self.settings.get("visualizers", []):
             if vis_pids(v["id"]):
                 stop_visualizer(v["id"])
                 start_visualizer(v)
+        for x in self.settings.get("panels", []):
+            if panel_pids(x["id"]):
+                stop_panel(x["id"])
+                start_panel(x)
+        if tf_pids("--service"):
+            stop_tf_process("--service")
+            for _ in range(30):
+                if not tf_pids("--service"):
+                    break
+                time.sleep(0.1)
+            ensure_service()
         os.execv(sys.executable, [sys.executable, str(SCRIPT)])
 
     def schedule_save(self):
         self.save_timer.start()
 
     def save_now(self):
+        self.save_timer.stop()
         try:
             save_settings(self.settings)
+            self.own_mtime = _mtime(SETTINGS_FILE)
         except Exception as e:
             self.statusBar().showMessage(f"Couldn't save settings: {e}", 8000)
 
@@ -3492,10 +6448,37 @@ def main():
     if "--version" in args:
         print(f"ThemeForge {VERSION}")
         return
-    if "--visualizer" in args:
-        i = args.index("--visualizer")
-        if i + 1 < len(args):
-            run_visualizer(args[i + 1])
+    for flag, cls in (("--visualizer", VisualizerWindow), ("--panel", PanelWindow)):
+        if flag in args:
+            i = args.index(flag)
+            if i + 1 < len(args):
+                run_desktop_window(cls, args[i + 1], flag)
+            return
+    if "--service" in args:
+        run_service()
+        return
+    if "--list-profiles" in args:
+        s = load_settings()
+        for x in s["profiles"]:
+            print(("* " if x["name"] == s.get("current_profile") else "  ") + x["name"])
+        return
+    if "--profile" in args or "--next-profile" in args:
+        s = load_settings()
+        if "--next-profile" in args:
+            name = next_profile_name(s)
+        else:
+            i = args.index("--profile")
+            name = " ".join(args[i + 1:]).strip()
+        if not name:
+            print("No profiles saved yet - save one on ThemeForge's Profiles tab.", file=sys.stderr)
+            notify("ThemeForge", "You haven't saved any profiles yet.")
+            sys.exit(1)
+        try:
+            switch_profile(s, name, print)
+            notify(f"Profile: {name}")
+        except ValueError as e:
+            print(e, file=sys.stderr)
+            sys.exit(1)
         return
     if "--update" in args:
         try:
