@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.4.0] - 2026-10-19
+
+### Added
+- **Five new panels:**
+  - **Calendar**: click the arrows to change month (the grid slides), click the month name to jump back to today. Today glows.
+  - **Countdown** to any date and time: digits roll like a flip clock as they change.
+  - **Drives**: free space on every real drive, detected automatically, with animated bars that turn red past 90%.
+  - **Network graph**: live download and upload, scrolling smoothly.
+  - **Notes & to-do**: shows a Markdown file. Click a checkbox to tick it off; the change is saved to the file. Editing the file anywhere updates the panel.
+- **CPU threads** for the system panel: one animated bar per thread.
+- **Customize any panel:**
+  - Background: solid, gradient, frosted glass or outline only.
+  - Highlight color, font, text size and a drop shadow.
+- **Motion options for any panel:**
+  - Entrance: fade, slide up, pop in or none.
+  - Animation speed and a breathing glow.
+  - Fade out while the mouse is over it, so you can see the desktop behind.
+- **Move panels by dragging them**: right-click a panel on the desktop, choose "Move this panel" and drop it where you want. The new position is saved and snapped to a 4 px grid.
+- **Visualizers:**
+  - A **particle fountain** style: sparks thrown up by the music fall back under gravity.
+  - A **dot columns** style.
+  - A **flowing colors** option that cycles the gradient over time.
+
 ## [2.3.1] - 2026-10-19
 
 ### Fixed

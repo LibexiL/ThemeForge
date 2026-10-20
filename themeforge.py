@@ -34,13 +34,13 @@ import urllib.request
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import (QFileInfo, QFileSystemWatcher, QObject, QPointF, QProcess, QRectF, QSize,
-                            Qt, QTimer, QUrl, Signal)
+from PySide6.QtCore import (QDateTime, QFileInfo, QFileSystemWatcher, QObject, QPointF, QProcess, QRectF,
+                            QSize, Qt, QTimer, QUrl, Signal)
 from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QDesktopServices, QFont, QFontDatabase,
                            QFontMetricsF, QGradient, QGuiApplication, QIcon, QImage,
                            QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
                            QRadialGradient)
-from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox, QDateTimeEdit,
                                QDialog, QFileIconProvider, QSystemTrayIcon, QDialogButtonBox, QDoubleSpinBox,
                                QFileDialog, QFontComboBox, QFormLayout, QFrame,
                                QGridLayout, QGroupBox, QHBoxLayout, QInputDialog,
@@ -49,7 +49,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
                                QScrollArea, QSpinBox, QSplitter, QTabWidget,
                                QToolButton, QVBoxLayout, QWidget)
 
-VERSION = "2.3.1"
+VERSION = "2.4.0"
 # GitHub "owner/repo" the auto-updater checks for new releases
 GITHUB_REPO = "LibexiL/ThemeForge"
 HOME = Path.home()
@@ -1116,17 +1116,29 @@ def screen_for(name):
 # ── panels ─────────────────────────────────────────────────────────
 
 PANEL_KINDS = [("launcher", "Games launcher"), ("nowplaying", "Now playing card"), ("clock", "Clock"),
-               ("system", "System gauges"), ("weather", "Weather")]
+               ("system", "System gauges"), ("weather", "Weather"), ("calendar", "Calendar"),
+               ("countdown", "Countdown"), ("drives", "Drives"), ("network", "Network graph"),
+               ("notes", "Notes & to-do")]
 SYSTEM_METRICS = [("cpu", "CPU"), ("ram", "RAM"), ("gpu", "GPU"), ("cputemp", "CPU temp"),
-                  ("gputemp", "GPU temp"), ("disk", "Disk"), ("net", "Network")]
+                  ("gputemp", "GPU temp"), ("disk", "Disk"), ("net", "Network"), ("cores", "CPU threads")]
 CLOCK_STYLES = [("ring", "Digital with seconds ring"), ("digital", "Digital"), ("analog", "Analog")]
 ART_STYLES = [("square", "Square"), ("vinyl", "Spinning record")]
+BACKGROUNDS = [("solid", "Solid"), ("gradient", "Gradient"), ("frosted", "Frosted glass"),
+               ("outline", "Outline only")]
+ENTRANCES = [("fade", "Fade in"), ("slide", "Slide up"), ("pop", "Pop in"), ("none", "None")]
+HIGHLIGHTS = [("accent", "Accent"), ("accent2", "Second accent"), ("red", "Red"), ("green", "Green"),
+              ("yellow", "Yellow"), ("blue", "Blue"), ("magenta", "Magenta"), ("cyan", "Cyan")]
+SAMPLE_NOTES = ("# Today\n- [x] Finish the ThemeForge setup\n- [ ] Daily Trove run\n- [ ] Back up the game saves\n"
+                "\n# Ideas\n- Neon theme for the bedroom PC\n- Album-art mode at night\n")
 
 
 def panel_template(kind="launcher"):
     p = {"id": uuid.uuid4().hex[:8], "kind": kind, "name": "Panel", "title": "", "alignment": "bottom_left",
          "gap_x": 40, "gap_y": 60, "width": 360, "opacity": 75, "radius": 14, "padding": 16, "border": True,
          "glow": False, "shimmer": False, "animations": True, "screen": "", "x11": True, "autostart": False,
+         # look & motion (every panel)
+         "font": "", "font_scale": 100, "highlight": "accent", "background": "solid", "shadow": False,
+         "entrance": "fade", "pulse": False, "hover_fade": False, "anim_speed": 100,
          # games launcher
          "folder": "~/Games", "columns": 4, "icon_size": 48, "labels": True,
          # now playing
@@ -1137,19 +1149,32 @@ def panel_template(kind="launcher"):
          # system gauges
          "metrics": ["cpu", "ram", "gpu", "cputemp"], "gauge_size": 84, "units": "c",
          # weather
-         "location": "", "weather_units": "us", "forecast_days": 3, "refresh": 20}
-    if kind == "launcher":
-        p.update(name="Games", title="GAMES")
-    elif kind == "nowplaying":
-        p.update(name="Now playing", title="NOW PLAYING", alignment="bottom_right", gap_y=220, width=400)
-    elif kind == "clock":
-        p.update(name="Clock", alignment="top_left", gap_y=40, width=260, opacity=0, border=False)
-    elif kind == "system":
-        p.update(name="System", title="SYSTEM", alignment="top_right", gap_y=40, width=420)
-    elif kind == "weather":
-        p.update(name="Weather", title="WEATHER", alignment="top_left", gap_y=320, width=360)
-    else:
-        p["kind"] = "launcher"
+         "location": "", "weather_units": "us", "forecast_days": 3, "refresh": 20,
+         # calendar
+         "week_start": "sunday",
+         # countdown
+         "event": "New Year", "target": f"{time.localtime().tm_year + 1}-01-01 00:00",
+         # drives
+         "mounts": "",
+         # network graph
+         "graph_seconds": 60, "graph_height": 80,
+         # notes
+         "notes_file": "~/Notes/desktop.md", "max_lines": 14}
+    defaults = {
+        "launcher": dict(name="Games", title="GAMES"),
+        "nowplaying": dict(name="Now playing", title="NOW PLAYING", alignment="bottom_right", gap_y=220, width=400),
+        "clock": dict(name="Clock", alignment="top_left", gap_y=40, width=260, opacity=0, border=False),
+        "system": dict(name="System", title="SYSTEM", alignment="top_right", gap_y=40, width=420),
+        "weather": dict(name="Weather", title="WEATHER", alignment="top_left", gap_y=320, width=360),
+        "calendar": dict(name="Calendar", alignment="top_left", gap_y=560, width=300),
+        "countdown": dict(name="Countdown", title="COUNTDOWN", alignment="top_middle", gap_y=40, width=380),
+        "drives": dict(name="Drives", title="DRIVES", alignment="middle_right", gap_y=60, width=340),
+        "network": dict(name="Network", title="NETWORK", alignment="middle_right", gap_y=-160, width=340),
+        "notes": dict(name="Notes", title="NOTES", alignment="middle_left", width=320, background="frosted"),
+    }
+    if kind not in defaults:
+        kind = p["kind"] = "launcher"
+    p.update(defaults[kind])
     return p
 
 
@@ -1205,6 +1230,8 @@ _count_cache = {}
 
 
 def panel_item_count(panel):
+    if panel["kind"] == "drives":
+        return len(drives_info(panel.get("mounts", ""))) or 1
     if panel["kind"] != "launcher":
         return 0
     key = panel["folder"]
@@ -1243,6 +1270,155 @@ def launch_item(item):
         return True
     subprocess.Popen(["xdg-open", path], **quiet)
     return True
+
+
+# ── data for the calendar, countdown, drives and notes panels ──────
+
+def notes_path(panel):
+    return Path(os.path.expanduser(panel.get("notes_file") or "~/Notes/desktop.md"))
+
+
+_notes_cache = {}
+
+
+def parse_notes(text):
+    """Markdown-ish lines → [(kind, text, line_index)]; kinds: h, todo, done, bullet, text, gap."""
+    out = []
+    for i, raw in enumerate(text.splitlines()):
+        line = raw.rstrip()
+        st = line.strip()
+        m = re.match(r"^[-*+]\s+\[([ xX])\]\s*(.*)$", st)
+        if not st:
+            if out and out[-1][0] != "gap":
+                out.append(("gap", "", i))
+        elif st.startswith("#"):
+            out.append(("h", st.lstrip("#").strip(), i))
+        elif m:
+            out.append(("done" if m.group(1).lower() == "x" else "todo", m.group(2), i))
+        elif re.match(r"^[-*+]\s+", st):
+            out.append(("bullet", re.sub(r"^[-*+]\s+", "", st), i))
+        else:
+            out.append(("text", st, i))
+    while out and out[-1][0] == "gap":
+        out.pop()
+    return out
+
+
+def notes_lines(panel):
+    path = notes_path(panel)
+    m = _mtime(path)
+    hit = _notes_cache.get(str(path))
+    if hit and hit[0] == m:
+        lines = hit[1]
+    else:
+        try:
+            lines = parse_notes(path.read_text(errors="replace"))
+        except OSError:
+            lines = [("text", "No notes file yet - right-click → Edit notes", -1)]
+        _notes_cache[str(path)] = (m, lines)
+    return lines[:max(1, panel.get("max_lines", 14))]
+
+
+def toggle_note(panel, line_index):
+    """Tick or untick the to-do on that line of the notes file."""
+    path = notes_path(panel)
+    lines = path.read_text(errors="replace").split("\n")
+    if not 0 <= line_index < len(lines):
+        return False
+    ln = lines[line_index]
+    new = re.sub(r"\[([ xX])\]", lambda m: "[ ]" if m.group(1).lower() == "x" else "[x]", ln, count=1)
+    if new == ln:
+        return False
+    lines[line_index] = new
+    tmp = path.with_name(f".{path.name}.tf-tmp")
+    tmp.write_text("\n".join(lines))
+    tmp.replace(path)
+    return True
+
+
+def ensure_notes_file(panel):
+    path = notes_path(panel)
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(SAMPLE_NOTES)
+    return path
+
+
+REAL_FS = {"ext2", "ext3", "ext4", "btrfs", "xfs", "f2fs", "zfs", "bcachefs", "ntfs", "ntfs3", "fuseblk",
+           "vfat", "exfat", "jfs", "reiserfs"}
+
+
+def drives_info(mounts=""):
+    """[{mount, label, used, total}] for real filesystems (or the mount points listed, comma separated)."""
+    wanted = [m.strip() for m in (mounts or "").split(",") if m.strip()]
+    seen, out = set(), []
+    try:
+        rows = [ln.split() for ln in Path("/proc/mounts").read_text().splitlines()]
+    except OSError:
+        rows = []
+    rows = [(r[0], r[1].replace("\\040", " "), r[2]) for r in rows if len(r) >= 3]
+    if wanted:
+        rows = [r for m in wanted for r in rows if r[1] == m][:]
+    else:
+        skip = ("/boot", "/snap", "/var/lib/", "/proc", "/sys", "/run/user", "/efi")
+        rows = [r for r in rows if r[2] in REAL_FS and not r[1].startswith(skip)]
+        rows.sort(key=lambda r: (len(r[1]), r[1]))
+    for dev, mnt, _fs in rows:
+        if dev in seen:
+            continue                      # btrfs subvolumes etc. share a device - show it once
+        seen.add(dev)
+        try:
+            st = os.statvfs(mnt)
+        except OSError:
+            continue
+        total = st.f_blocks * st.f_frsize
+        if total <= 0:
+            continue
+        used = total - st.f_bfree * st.f_frsize
+        label = {"/": "System", "/home": "Home"}.get(mnt, Path(mnt).name or mnt)
+        out.append({"mount": mnt, "label": label, "used": used, "total": total})
+    return out[:8]
+
+
+SAMPLE_DRIVES = [{"mount": "/", "label": "System", "used": 273e9, "total": 388e9},
+                 {"mount": "/run/media/games", "label": "Games", "used": 785e9, "total": 1.82e12}]
+
+
+def fmt_bytes(n):
+    for unit, size in (("TB", 1e12), ("GB", 1e9), ("MB", 1e6)):
+        if n >= size:
+            return f"{n / size:.1f} {unit}" if n / size < 100 else f"{n / size:.0f} {unit}"
+    return f"{n / 1e3:.0f} KB"
+
+
+def calendar_weeks(year, month, week_start="sunday"):
+    """Always 6 weeks of datetime.date, so the panel never changes height between months."""
+    import calendar as _cal
+    import datetime
+    weeks = _cal.Calendar(6 if week_start == "sunday" else 0).monthdatescalendar(year, month)
+    while len(weeks) < 6:
+        last = weeks[-1][-1]
+        weeks.append([last + datetime.timedelta(days=k) for k in range(1, 8)])
+    return weeks
+
+
+def shift_month(year, month, offset):
+    k = year * 12 + (month - 1) + offset
+    return k // 12, k % 12 + 1
+
+
+def parse_target(text):
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return time.mktime(time.strptime(text.strip(), fmt))
+        except (ValueError, AttributeError):
+            continue
+    return None
+
+
+def countdown_parts(remaining):
+    r = max(0, int(remaining))
+    return {"days": r // 86400, "hours": r // 3600 % 24, "minutes": r // 60 % 60, "seconds": r % 60}
 
 
 def panel_width(panel):
@@ -1313,7 +1489,7 @@ def panel_layout(panel, n_items=0):
                 lay["date"] = QRectF(pad, y + 6, W - 2 * pad, 22)
                 y += 30
     elif kind == "system":
-        mets = [m for m in panel["metrics"] if m in dict(SYSTEM_METRICS) and m != "net"]
+        mets = [m for m in panel["metrics"] if m in dict(SYSTEM_METRICS) and m not in ("net", "cores")]
         g, gap = panel["gauge_size"], 14
         cols = max(1, int((W - 2 * pad + gap) // (g + gap)))
         cols = min(cols, max(1, len(mets)))
@@ -1326,10 +1502,14 @@ def panel_layout(panel, n_items=0):
             x0 = pad + (W - 2 * pad - (in_row * g + (in_row - 1) * gap)) / 2
             lay["gauges"].append((m, QRectF(x0 + c * (g + gap), y + r * cell_h, g, g)))
         y += rows * cell_h
+        if "cores" in panel["metrics"]:
+            lay["cores"] = QRectF(pad, y + 4, W - 2 * pad, 44)
+            lay["cores_label"] = QRectF(pad, y + 50, W - 2 * pad, 16)
+            y += 70
         if "net" in panel["metrics"]:
             lay["net"] = QRectF(pad, y + 2, W - 2 * pad, 20)
             y += 26
-        if not mets and "net" not in panel["metrics"]:
+        if not mets and not {"net", "cores"} & set(panel["metrics"]):
             lay["empty"] = QRectF(pad, y, W - 2 * pad, 40)
             y += 40
     elif kind == "weather":
@@ -1347,6 +1527,44 @@ def panel_layout(panel, n_items=0):
             cw = (W - 2 * pad) / n
             lay["days"] = [QRectF(pad + i * cw, y, cw, 76) for i in range(n)]
             y += 76
+    elif kind == "calendar":
+        cw = (W - 2 * pad) / 7
+        lay["cal_head"] = QRectF(pad, y, W - 2 * pad, 26)
+        lay["cal_prev"] = QRectF(W - pad - 52, y + 1, 24, 24)
+        lay["cal_next"] = QRectF(W - pad - 24, y + 1, 24, 24)
+        y += 32
+        lay["cal_names"] = [QRectF(pad + c * cw, y, cw, 18) for c in range(7)]
+        y += 20
+        ch = max(24.0, min(cw, 34.0))
+        lay["cal_cells"] = [QRectF(pad + c * cw, y + r * ch, cw, ch) for r in range(6) for c in range(7)]
+        y += 6 * ch
+    elif kind == "countdown":
+        lay["cd_event"] = QRectF(pad, y, W - 2 * pad, 22)
+        y += 28
+        gap = 10
+        cw = (W - 2 * pad - 3 * gap) / 4
+        ch = max(44.0, min(cw * 0.95, 84.0))
+        lay["cd_cards"] = [QRectF(pad + k * (cw + gap), y, cw, ch) for k in range(4)]
+        lay["cd_labels"] = [QRectF(pad + k * (cw + gap), y + ch + 4, cw, 16) for k in range(4)]
+        y += ch + 22
+        lay["cd_target"] = QRectF(pad, y, W - 2 * pad, 16)
+        y += 18
+    elif kind == "drives":
+        n = max(1, n_items)
+        lay["drive_rows"] = [QRectF(pad, y + k * 42, W - 2 * pad, 36) for k in range(n)]
+        y += n * 42 - 6
+    elif kind == "network":
+        lay["graph"] = QRectF(pad, y, W - 2 * pad, max(30, panel["graph_height"]))
+        y += lay["graph"].height() + 6
+        lay["netinfo"] = QRectF(pad, y, W - 2 * pad, 20)
+        y += 22
+    elif kind == "notes":
+        rows = []
+        for kind_, text, idx in notes_lines(panel):
+            h = {"h": 26, "gap": 8}.get(kind_, 21)
+            rows.append((kind_, text, idx, QRectF(pad, y, W - 2 * pad, h)))
+            y += h
+        lay["note_rows"] = rows
     return lay, QRectF(0, 0, W, y + pad)
 
 
@@ -1369,6 +1587,17 @@ def panel_hit(panel, n_items, pos):
         return ("seek", clamp((pos.x() - r.left()) / r.width()))
     if panel["kind"] == "weather" and full.contains(pos):
         return ("forecast", None)
+    if panel["kind"] == "calendar":
+        if lay["cal_prev"].contains(pos):
+            return ("month", -1)
+        if lay["cal_next"].contains(pos):
+            return ("month", 1)
+        if lay["cal_head"].contains(pos):
+            return ("month", 0)
+    if panel["kind"] == "notes":
+        for kind_, _text, idx, r in lay["note_rows"]:
+            if kind_ in ("todo", "done") and r.contains(pos):
+                return ("check", idx)
     return None
 
 
@@ -1377,13 +1606,6 @@ def fmt_time(sec):
         return "-:--"
     sec = int(sec)
     return f"{sec // 3600}:{sec // 60 % 60:02d}:{sec % 60:02d}" if sec >= 3600 else f"{sec // 60}:{sec % 60:02d}"
-
-
-def _font(size, bold=False):
-    f = QFont()
-    f.setPointSizeF(size)
-    f.setBold(bold)
-    return f
 
 
 def _draw_transport_icon(qp, kind, r, col):
@@ -1423,30 +1645,84 @@ def _alpha(col, a):
     return c
 
 
+_FONT = {"family": "", "scale": 1.0}       # set per panel while painting
+
+
+def _font(size, bold=False):
+    f = QFont(_FONT["family"]) if _FONT["family"] else QFont()
+    f.setPointSizeF(max(1.0, size * _FONT["scale"]))
+    f.setBold(bold)
+    return f
+
+
+def panel_palette(p, panel):
+    """The palette with the panel's chosen highlight color in the accent slot."""
+    role = panel.get("highlight", "accent")
+    if role == "accent":
+        return p
+    q = dict(p)
+    if role == "accent2":
+        q["accent"], q["accent2"] = p["accent2"], p["accent"]
+    else:
+        q["accent"] = role_color(p, role)
+    return q
+
+
 def paint_panel(qp, origin, panel, p, state):
     """Draw a panel with its top-left corner at origin.
 
-    state: t (seconds, drives ambient motion), appear (0..1 fade-in), glow (bass 0..1), plus kind-specific
-    data - items/icons/hover/hover_amt/press/ripples (launcher), np/art/art_prev/art_mix/vinyl/title_since
-    (now playing), now (clock), stats/shown (system), weather (weather)."""
+    state: t (seconds, drives ambient motion), appear (0..1 entrance), fade (0..1 hover fade), glow (bass 0..1),
+    moving (drag mode), plus kind-specific data - items/icons/hover/hover_amt/press/ripples (launcher),
+    np/art/art_prev/art_mix/vinyl/title_since (now playing), now (clock, countdown), stats/shown (system),
+    weather, month_offset/month_anim (calendar), drives/drive_shown, net_hist/net_max/net_phase (network),
+    check_anim (notes)."""
+    old_font = dict(_FONT)
+    _FONT.update(family=panel.get("font") or "", scale=clamp(panel.get("font_scale", 100) / 100, 0.6, 1.6))
+    try:
+        return _paint_panel(qp, origin, panel, panel_palette(p, panel), state)
+    finally:
+        _FONT.update(old_font)
+
+
+def _paint_panel(qp, origin, panel, p, state):
     items = state.get("items", [])
-    lay, full = panel_layout(panel, len(items))
-    t = state.get("t", 0.0)
+    n_items = len(state["drives"]) if panel["kind"] == "drives" and state.get("drives") else len(items)
+    lay, full = panel_layout(panel, n_items)
     anim = panel.get("animations", True)
-    bg, ac = p["background"], p["accent"]
+    t = state.get("t", 0.0) * panel.get("anim_speed", 100) / 100
+    bg, fg, ac = p["background"], p["foreground"], p["accent"]
+    style = panel.get("background", "solid")
     qp.save()
     qp.setRenderHint(QPainter.Antialiasing)
     qp.setRenderHint(QPainter.SmoothPixmapTransform)
     qp.translate(origin)
-    appear = ease_out(state.get("appear", 1.0)) if anim else 1.0
-    if appear < 1:
-        qp.setOpacity(qp.opacity() * appear)
-        qp.translate(0, (1 - appear) * 12)
+    entrance = panel.get("entrance", "fade")
+    a = ease_out(state.get("appear", 1.0)) if anim and entrance != "none" else 1.0
+    if a < 1:
+        qp.setOpacity(qp.opacity() * a)
+        if entrance == "slide":
+            qp.translate(0, (1 - a) * 18)
+        elif entrance == "pop":
+            c = full.center()
+            k = 0.88 + 0.12 * a
+            qp.translate(c)
+            qp.scale(k, k)
+            qp.translate(-c)
+    fade = state.get("fade", 0.0)
+    if fade > 0:
+        qp.setOpacity(qp.opacity() * (1 - 0.8 * fade))
     rad = panel["radius"]
     body = QPainterPath()
     body.addRoundedRect(full, rad, rad)
 
+    if panel.get("shadow"):
+        for k in range(6, 0, -1):
+            sh = QPainterPath()
+            sh.addRoundedRect(full.adjusted(-k * 1.5, -k * 1.5 + 5, k * 1.5, k * 1.5 + 5), rad + k, rad + k)
+            qp.fillPath(sh.subtracted(body), _alpha("#000000", 0.05))
     glow = state.get("glow", 0.0) if panel["glow"] else 0.0
+    if panel.get("pulse") and anim:
+        glow = max(glow, 0.18 + 0.22 * (0.5 + 0.5 * math.sin(t * 1.7)))
     if glow > 0.02:
         for k in range(6, 0, -1):
             grow = k * 3
@@ -1454,7 +1730,26 @@ def paint_panel(qp, origin, panel, p, state):
             outer.addRoundedRect(full.adjusted(-grow, -grow, grow, grow), rad + grow, rad + grow)
             qp.fillPath(outer.subtracted(body), _alpha(ac, glow * 0.09))
 
-    qp.fillPath(body, _alpha(bg, panel["opacity"] / 100))
+    op = panel["opacity"] / 100
+    if style == "gradient":
+        g = QLinearGradient(full.topLeft(), full.bottomRight())
+        g.setColorAt(0, _alpha(bg, op))
+        g.setColorAt(1, _alpha(mix(bg, ac, 0.28), op))
+        qp.fillPath(body, QBrush(g))
+    elif style == "frosted":
+        qp.fillPath(body, _alpha(mix(bg, fg, 0.07), op))
+        sheen = QLinearGradient(full.topLeft(), QPointF(full.left(), full.top() + full.height() * 0.45))
+        sheen.setColorAt(0, _alpha("#ffffff", 0.09 * max(op, 0.4)))
+        sheen.setColorAt(1, _alpha("#ffffff", 0.0))
+        qp.fillPath(body, QBrush(sheen))
+        inner = QPainterPath()
+        inner.addRoundedRect(full.adjusted(1.5, 1.5, -1.5, -1.5), rad - 1.5, rad - 1.5)
+        qp.setPen(QPen(_alpha("#ffffff", 0.10), 1))
+        qp.setBrush(Qt.NoBrush)
+        qp.drawPath(inner)
+    elif style != "outline":
+        qp.fillPath(body, _alpha(bg, op))
+
     if panel.get("shimmer") and anim:
         g = QConicalGradient(full.center(), (-t * 70) % 360)
         g.setColorAt(0.0, _alpha(ac, 0.95))
@@ -1467,7 +1762,7 @@ def paint_panel(qp, origin, panel, p, state):
         qp.setPen(QPen(QBrush(g), 1.8))
         qp.setBrush(Qt.NoBrush)
         qp.drawPath(body)
-    elif panel["border"] or glow > 0.02:
+    elif panel["border"] or glow > 0.02 or style == "outline":
         edge = QColor(mix(bg, ac, 0.4))
         if glow > 0.02:
             edge = QColor(mix(mix(bg, ac, 0.4), ac, clamp(glow)))
@@ -1484,9 +1779,18 @@ def paint_panel(qp, origin, panel, p, state):
         qp.setPen(QColor(ac))
         qp.drawText(lay["title"], Qt.AlignLeft | Qt.AlignVCenter, panel["title"])
     painter = {"launcher": _paint_launcher, "nowplaying": _paint_nowplaying, "clock": _paint_clock,
-               "system": _paint_system, "weather": _paint_weather}[panel["kind"]]
+               "system": _paint_system, "weather": _paint_weather, "calendar": _paint_calendar,
+               "countdown": _paint_countdown, "drives": _paint_drives, "network": _paint_network,
+               "notes": _paint_notes}[panel["kind"]]
     painter(qp, lay, panel, p, state, t if anim else 0.0, anim)
     qp.restore()
+    if state.get("moving"):
+        qp.setPen(QPen(QColor(ac), 2, Qt.DashLine))
+        qp.setBrush(_alpha(ac, 0.08))
+        qp.drawPath(body)
+        qp.setFont(_font(9, True))
+        qp.setPen(QColor(fg))
+        qp.drawText(full, Qt.AlignCenter, "Drag to move · click to drop")
     qp.restore()
     return full
 
@@ -1907,6 +2211,8 @@ def _paint_system(qp, lay, panel, p, state, t, anim):
         qp.setPen(QColor(mu))
         qp.drawText(QRectF(r.left() - 10, r.bottom() + 2, r.width() + 20, 18), Qt.AlignHCenter | Qt.AlignTop,
                     names.get(m, m))
+    if "cores" in lay:
+        _paint_cores(qp, lay, p, state, t, anim)
     if "net" in lay:
         down, up = stats.get("net", (0.0, 0.0))
         r = lay["net"]
@@ -2104,6 +2410,326 @@ def _paint_weather(qp, lay, panel, p, state, t, anim):
         qp.drawText(QPointF(x + fmh.horizontalAdvance(hi), r.bottom() - 6), lo)
 
 
+# ── calendar ───────────────────────────────────────────────────────
+
+def _chevron(qp, r, left, col):
+    c = r.center()
+    s = r.width() * 0.18
+    d = -1 if left else 1
+    qp.setPen(QPen(QColor(col), 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    qp.setBrush(Qt.NoBrush)
+    path = QPainterPath(QPointF(c.x() - d * s * 0.5, c.y() - s))
+    path.lineTo(c.x() + d * s * 0.5, c.y())
+    path.lineTo(c.x() - d * s * 0.5, c.y() + s)
+    qp.drawPath(path)
+
+
+def _paint_calendar(qp, lay, panel, p, state, t, anim):
+    import datetime
+    bg, fg, mu, ac = p["background"], p["foreground"], p["muted"], p["accent"]
+    today = datetime.date.fromtimestamp(state.get("now") or time.time())
+    year, month = shift_month(today.year, today.month, state.get("month_offset", 0))
+    hover = state.get("hover")
+    qp.setFont(_font(11.5, True))
+    qp.setPen(QColor(fg))
+    qp.drawText(lay["cal_head"], Qt.AlignLeft | Qt.AlignVCenter,
+                datetime.date(year, month, 1).strftime("%B %Y"))
+    for key, left in (("cal_prev", True), ("cal_next", False)):
+        r = lay[key]
+        if hover == ("month", -1 if left else 1):
+            qp.setPen(Qt.NoPen)
+            qp.setBrush(_alpha(ac, 0.22))
+            qp.drawEllipse(r)
+        _chevron(qp, r, left, fg)
+    names = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"] if panel["week_start"] == "sunday" else \
+        ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
+    qp.setFont(_font(8, True))
+    qp.setPen(QColor(mu))
+    for name, r in zip(names, lay["cal_names"]):
+        qp.drawText(r, Qt.AlignCenter, name)
+    slide = state.get("month_anim", 0.0) if anim else 0.0      # -1..1 while changing months
+    qp.save()
+    if slide:
+        qp.translate(slide * 24, 0)
+        qp.setOpacity(qp.opacity() * (1 - abs(slide)))
+    weeks = calendar_weeks(year, month, panel["week_start"])
+    days = [d for w in weeks for d in w]
+    for d, r in zip(days, lay["cal_cells"]):
+        inside = d.month == month
+        c = r.center()
+        rr = min(r.width(), r.height()) * 0.42
+        if d == today:
+            pulse = 0.5 + 0.5 * math.sin(t * 2.2) if anim else 0.6
+            halo = QRadialGradient(c, rr * 1.9)
+            halo.setColorAt(0, _alpha(ac, 0.45 * pulse))
+            halo.setColorAt(1, _alpha(ac, 0))
+            qp.setPen(Qt.NoPen)
+            qp.setBrush(QBrush(halo))
+            qp.drawEllipse(c, rr * 1.9, rr * 1.9)
+            qp.setBrush(QColor(ac))
+            qp.drawEllipse(c, rr, rr)
+            qp.setPen(QColor(best_text(ac, p)))
+            qp.setFont(_font(9.5, True))
+        else:
+            weekend = d.weekday() >= 5
+            qp.setPen(QColor(fg if inside and not weekend else mix(fg, mu, 0.5) if inside else
+                             mix(mu, bg, 0.45)))
+            qp.setFont(_font(9.5))
+        qp.drawText(r, Qt.AlignCenter, str(d.day))
+    qp.restore()
+
+
+# ── countdown ──────────────────────────────────────────────────────
+
+def _paint_countdown(qp, lay, panel, p, state, t, anim):
+    bg, fg, mu, ac = p["background"], p["foreground"], p["muted"], p["accent"]
+    now = state.get("now") or time.time()
+    target = parse_target(panel["target"])
+    qp.setFont(_font(11, True))
+    qp.setPen(QColor(fg))
+    fm = QFontMetricsF(qp.font())
+    qp.drawText(lay["cd_event"], Qt.AlignCenter, fm.elidedText(panel["event"] or "Countdown", Qt.ElideRight,
+                                                               lay["cd_event"].width()))
+    qp.setFont(_font(8))
+    qp.setPen(QColor(mu))
+    if target is None:
+        qp.drawText(lay["cd_target"], Qt.AlignCenter, "Set a date like 2026-12-25 18:00")
+        target = now
+    else:
+        qp.drawText(lay["cd_target"], Qt.AlignCenter, time.strftime("%A %d %B %Y, %H:%M", time.localtime(target)))
+    remaining = target - now
+    done = remaining <= 0
+    parts = countdown_parts(remaining)
+    units = [("days", 10 ** 9), ("hours", 24), ("minutes", 60), ("seconds", 60)]
+    for k, ((unit, wrap), card, label) in enumerate(zip(units, lay["cd_cards"], lay["cd_labels"])):
+        qp.setPen(Qt.NoPen)
+        qp.setBrush(QColor(mix(bg, fg, 0.08)))
+        qp.drawRoundedRect(card, 10, 10)
+        value = parts[unit]
+        # how long since this unit last changed → roll the old digit up and the new one in
+        period = {"days": 86400, "hours": 3600, "minutes": 60, "seconds": 1}[unit]
+        since = period - (remaining % period) if remaining > 0 else 99
+        roll = clamp(since / 0.45) if anim and not done else 1.0
+        old = (value + 1) % wrap if unit != "days" else value + 1
+        qp.save()
+        clip = QPainterPath()
+        clip.addRoundedRect(card, 10, 10)
+        qp.setClipPath(clip, Qt.IntersectClip)
+        qp.setFont(_font(card.height() * 0.36, True))
+        e = ease_out(roll)
+        base = qp.opacity()
+        if e < 1:
+            qp.setOpacity(base * (1 - e))
+            qp.setPen(QColor(fg))
+            qp.drawText(card.translated(0, -e * card.height() * 0.6), Qt.AlignCenter, f"{old:02d}")
+            qp.setOpacity(base * e)
+        qp.setPen(QColor(ac if done else fg))
+        qp.drawText(card.translated(0, (1 - e) * card.height() * 0.6), Qt.AlignCenter, f"{value:02d}")
+        qp.restore()
+        qp.setPen(QPen(_alpha(bg, 0.5), 1))
+        qp.drawLine(QPointF(card.left() + 6, card.center().y()), QPointF(card.right() - 6, card.center().y()))
+        qp.setFont(_font(7.5, True))
+        qp.setPen(QColor(mu))
+        qp.drawText(label, Qt.AlignCenter, unit.upper())
+    if done:
+        qp.setFont(_font(11, True))
+        qp.setPen(QColor(ac))
+        qp.drawText(lay["cd_event"].translated(0, 0), Qt.AlignRight | Qt.AlignVCenter, "It's here!")
+
+
+# ── drives ─────────────────────────────────────────────────────────
+
+def _paint_drives(qp, lay, panel, p, state, t, anim):
+    bg, fg, mu, ac, ac2 = (p[k] for k in ("background", "foreground", "muted", "accent", "accent2"))
+    drives = state.get("drives") or []
+    shown = state.get("drive_shown") or {}
+    if not drives:
+        qp.setFont(_font(9))
+        qp.setPen(QColor(mu))
+        qp.drawText(lay["drive_rows"][0], Qt.AlignCenter, "No drives found")
+        return
+    for d, r in zip(drives, lay["drive_rows"]):
+        frac = clamp(shown.get(d["mount"], d["used"] / d["total"]))
+        qp.setFont(_font(9.5, True))
+        qp.setPen(QColor(fg))
+        qp.drawText(QRectF(r.left(), r.top(), r.width(), 18), Qt.AlignLeft | Qt.AlignVCenter, d["label"])
+        qp.setFont(_font(8.5))
+        qp.setPen(QColor(mu))
+        qp.drawText(QRectF(r.left(), r.top(), r.width(), 18), Qt.AlignRight | Qt.AlignVCenter,
+                    f"{fmt_bytes(d['total'] - d['used'])} free of {fmt_bytes(d['total'])}")
+        bar = QRectF(r.left(), r.top() + 23, r.width(), 7)
+        qp.setPen(Qt.NoPen)
+        qp.setBrush(_alpha(fg, 0.10))
+        qp.drawRoundedRect(bar, 3.5, 3.5)
+        g = QLinearGradient(bar.topLeft(), bar.topRight())
+        _stops(g, [ac2, p["ansi"][1] if frac > 0.9 else ac])
+        qp.setBrush(QBrush(g))
+        fill = QRectF(bar.left(), bar.top(), max(7, bar.width() * frac), bar.height())
+        qp.drawRoundedRect(fill, 3.5, 3.5)
+        if anim:
+            sx = fill.left() + (t * 45 + r.top()) % max(1, fill.width() + 60) - 30
+            sg = QLinearGradient(sx - 24, 0, sx + 24, 0)
+            sg.setColorAt(0, _alpha("#ffffff", 0))
+            sg.setColorAt(0.5, _alpha("#ffffff", 0.3))
+            sg.setColorAt(1, _alpha("#ffffff", 0))
+            qp.save()
+            qp.setClipRect(fill)
+            qp.setBrush(QBrush(sg))
+            qp.drawRect(fill)
+            qp.restore()
+
+
+# ── network graph ──────────────────────────────────────────────────
+
+def _paint_network(qp, lay, panel, p, state, t, anim):
+    bg, fg, mu, ac, ac2 = (p[k] for k in ("background", "foreground", "muted", "accent", "accent2"))
+    hist = state.get("net_hist") or []
+    gr = lay["graph"]
+    qp.setPen(QPen(_alpha(fg, 0.07), 1))
+    for k in range(1, 4):
+        y = gr.top() + gr.height() * k / 4
+        qp.drawLine(QPointF(gr.left(), y), QPointF(gr.right(), y))
+    n = max(2, panel["graph_seconds"])
+    top = max(state.get("net_max", 0.0), 1024.0)
+    phase = state.get("net_phase", 0.0) if anim else 0.0      # 0..1 between samples → smooth scrolling
+    step = gr.width() / (n - 1)
+    qp.save()
+    qp.setClipRect(gr)
+    for idx, col in ((0, ac2), (1, ac)):
+        vals = [h[idx] for h in hist[-(n + 1):]]
+        if len(vals) < 2:
+            continue
+        pts = [QPointF(gr.right() - (len(vals) - 1 - i + phase) * step,
+                       gr.bottom() - clamp(v / top) * gr.height() * 0.92) for i, v in enumerate(vals)]
+        line = _smooth_path(pts)
+        if idx == 0:
+            area = QPainterPath(line)
+            area.lineTo(pts[-1].x(), gr.bottom())
+            area.lineTo(pts[0].x(), gr.bottom())
+            area.closeSubpath()
+            g = QLinearGradient(0, gr.top(), 0, gr.bottom())
+            g.setColorAt(0, _alpha(col, 0.45))
+            g.setColorAt(1, _alpha(col, 0.02))
+            qp.fillPath(area, QBrush(g))
+        qp.setPen(QPen(QColor(col), 1.8 if idx == 0 else 1.4, Qt.SolidLine if idx == 0 else Qt.DashLine))
+        qp.setBrush(Qt.NoBrush)
+        qp.drawPath(line)
+        tip = pts[-1]
+        halo = QRadialGradient(tip, 7)
+        halo.setColorAt(0, _alpha(col, 0.9))
+        halo.setColorAt(1, _alpha(col, 0))
+        qp.setPen(Qt.NoPen)
+        qp.setBrush(QBrush(halo))
+        qp.drawEllipse(tip, 7, 7)
+    qp.restore()
+    down, up = hist[-1] if hist else (0.0, 0.0)
+    r = lay["netinfo"]
+    qp.setFont(_font(9))
+    half = QRectF(r.left(), r.top(), r.width() / 2 - 8, r.height())
+    for k, (label, val, col) in enumerate((("Down", down, ac2), ("Up", up, ac))):
+        hr = half.translated(k * (r.width() / 2 + 8), 0)
+        qp.setPen(QColor(mu))
+        qp.drawText(hr, Qt.AlignLeft | Qt.AlignVCenter, label)
+        qp.setPen(QColor(col))
+        qp.drawText(hr, Qt.AlignRight | Qt.AlignVCenter, fmt_rate(val))
+    qp.setFont(_font(7.5))
+    qp.setPen(QColor(mu))
+    qp.drawText(gr.adjusted(4, 2, -4, 0), Qt.AlignRight | Qt.AlignTop, fmt_rate(top))
+
+
+# ── notes ──────────────────────────────────────────────────────────
+
+def _paint_notes(qp, lay, panel, p, state, t, anim):
+    fg, mu, ac = p["foreground"], p["muted"], p["accent"]
+    hover = state.get("hover")
+    checks = state.get("check_anim", {})
+    for kind, text, idx, r in lay["note_rows"]:
+        if kind == "gap":
+            continue
+        if kind == "h":
+            qp.setFont(_font(10.5, True))
+            qp.setPen(QColor(ac))
+            fm = QFontMetricsF(qp.font())
+            qp.drawText(r.adjusted(0, 4, 0, 0), Qt.AlignLeft | Qt.AlignVCenter,
+                        fm.elidedText(text, Qt.ElideRight, r.width()))
+            continue
+        x = r.left()
+        if kind in ("todo", "done"):
+            box = QRectF(x + 1, r.center().y() - 7, 14, 14)
+            k = checks.get(idx, 1.0) if anim else 1.0
+            on = kind == "done"
+            if hover == ("check", idx):
+                qp.setPen(Qt.NoPen)
+                qp.setBrush(_alpha(ac, 0.15))
+                qp.drawRoundedRect(r.adjusted(-4, 0, 4, 0), 6, 6)
+            qp.setPen(QPen(QColor(ac if on else mix(fg, mu, 0.4)), 1.5))
+            qp.setBrush(QColor(ac) if on else Qt.NoBrush)
+            if on and k < 1:
+                g = 0.6 + 0.4 * ease_out(k)                   # tick pops in
+                c = box.center()
+                qp.drawRoundedRect(QRectF(c.x() - 7 * g, c.y() - 7 * g, 14 * g, 14 * g), 4, 4)
+            else:
+                qp.drawRoundedRect(box, 4, 4)
+            if on:
+                tick = QPainterPath(QPointF(box.left() + 3.2, box.center().y() + 0.3))
+                tick.lineTo(box.left() + 6, box.bottom() - 3.6)
+                tick.lineTo(box.right() - 3, box.top() + 3.8)
+                qp.setPen(QPen(QColor(best_text(ac, p)), 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+                qp.setBrush(Qt.NoBrush)
+                base = qp.opacity()
+                qp.setOpacity(base * ease_out(k))
+                qp.drawPath(tick)
+                qp.setOpacity(base)
+            x += 22
+        elif kind == "bullet":
+            qp.setPen(Qt.NoPen)
+            qp.setBrush(QColor(ac))
+            qp.drawEllipse(QPointF(x + 5, r.center().y()), 2.6, 2.6)
+            x += 16
+        qp.setFont(_font(9.5))
+        tr = QRectF(x, r.top(), r.right() - x, r.height())
+        fm = QFontMetricsF(qp.font())
+        shown = fm.elidedText(text, Qt.ElideRight, tr.width())
+        qp.setPen(QColor(mix(fg, mu, 0.55) if kind == "done" else fg))
+        qp.drawText(tr, Qt.AlignLeft | Qt.AlignVCenter, shown)
+        if kind == "done":
+            w = fm.horizontalAdvance(shown)
+            k = checks.get(idx, 1.0) if anim else 1.0
+            qp.setPen(QPen(QColor(mix(fg, mu, 0.5)), 1.2))
+            qp.drawLine(QPointF(tr.left(), tr.center().y() + 1), QPointF(tr.left() + w * ease_out(k),
+                                                                          tr.center().y() + 1))
+
+
+# ── system: per-thread CPU bars ────────────────────────────────────
+
+def _paint_cores(qp, lay, p, state, t, anim):
+    fg, mu, ac, ac2 = p["foreground"], p["muted"], p["accent"], p["accent2"]
+    stats, shown = state.get("stats") or {}, state.get("shown") or {}
+    cores = shown.get("cores") or (stats.get("cores") or ([], ""))[0]
+    r = lay["cores"]
+    if not cores:
+        return
+    n = len(cores)
+    gap = 3 if n > 16 else 4
+    bw = (r.width() - gap * (n - 1)) / n
+    g = QLinearGradient(0, r.bottom(), 0, r.top())
+    _stops(g, [ac2, ac])
+    for i, v in enumerate(cores):
+        x = r.left() + i * (bw + gap)
+        qp.setPen(Qt.NoPen)
+        qp.setBrush(_alpha(fg, 0.08))
+        qp.drawRoundedRect(QRectF(x, r.top(), bw, r.height()), 2, 2)
+        h = max(2.0, clamp(v) * r.height())
+        qp.setBrush(QBrush(g) if v < 0.9 else QColor(p["ansi"][1]))
+        qp.drawRoundedRect(QRectF(x, r.bottom() - h, bw, h), 2, 2)
+    qp.setFont(_font(8.5))
+    qp.setPen(QColor(mu))
+    avg = sum(cores) / n
+    qp.drawText(lay["cores_label"], Qt.AlignLeft | Qt.AlignVCenter, f"{n} CPU threads")
+    qp.drawText(lay["cores_label"], Qt.AlignRight | Qt.AlignVCenter, f"avg {round(avg * 100)}%  ·  "
+                f"busiest {round(max(cores) * 100)}%")
+
+
 # ── album art / now playing data ───────────────────────────────────
 
 NP_FORMAT = ("{{status}}\t{{xesam:title}}\t{{xesam:artist}}\t{{mpris:artUrl}}\t{{mpris:length}}\t"
@@ -2171,6 +2797,16 @@ def _cpu_times():
     return v[3] + (v[4] if len(v) > 4 else 0), sum(v)
 
 
+def _core_times():
+    out = []
+    with open("/proc/stat") as f:
+        for line in f:
+            if re.match(r"cpu\d+ ", line):
+                v = [int(x) for x in line.split()[1:]]
+                out.append((v[3] + (v[4] if len(v) > 4 else 0), sum(v)))
+    return out
+
+
 def _net_bytes():
     rx = tx = 0
     with open("/proc/net/dev") as f:
@@ -2206,10 +2842,19 @@ def collect_stats(prev=None, units="c"):
     now = time.monotonic()
     out = {}
     idle, total = _cpu_times()
+    cores = _core_times()
     try:
         rx, tx = _net_bytes()
     except OSError:
         rx = tx = 0
+    if prev and len(prev.get("cores", [])) == len(cores):
+        fr = []
+        for (i1, t1), (i0, t0) in zip(cores, prev["cores"]):
+            dt_ = t1 - t0
+            fr.append(clamp(1 - (i1 - i0) / dt_) if dt_ else 0.0)
+        out["cores"] = (fr, f"{len(fr)} threads")
+    else:
+        out["cores"] = ([0.0] * len(cores), f"{len(cores)} threads")
     if prev:
         dt = max(0.001, now - prev["t"])
         d_total = total - prev["total"]
@@ -2236,7 +2881,7 @@ def collect_stats(prev=None, units="c"):
     out["gpu"] = (clamp(gu / 100) if gu is not None else 0.0, "n/a" if gu is None else f"{gu}%")
     out["gputemp"] = (clamp(gt / 100) if gt else 0.0, h["fmt_temp"](gt, units))
     out["net"] = (down, up)
-    return out, {"t": now, "idle": idle, "total": total, "rx": rx, "tx": tx}
+    return out, {"t": now, "idle": idle, "total": total, "rx": rx, "tx": tx, "cores": cores}
 
 
 def fake_stats(t):
@@ -2246,7 +2891,8 @@ def fake_stats(t):
     cpu, gpu = wave(0.34, 0.22, 0.9), wave(0.45, 0.3, 0.6)
     return {"cpu": (cpu, f"{round(cpu * 100)}%"), "ram": (0.41, "12.8G"), "gpu": (gpu, f"{round(gpu * 100)}%"),
             "cputemp": (0.52, "52°C"), "gputemp": (0.61, "61°C"), "disk": (0.70, "70%"),
-            "net": (1.4e6 + 9e5 * math.sin(t), 86e3)}
+            "net": (1.4e6 + 9e5 * math.sin(t), 86e3),
+            "cores": ([wave(0.3 + 0.04 * i, 0.25, 0.7 + i * 0.13) for i in range(12)], "12 threads")}
 
 
 WEATHER_CACHE = CFG_DIR / "weather.json"
@@ -2393,13 +3039,15 @@ class AudioFeed(QObject):
 
 VIS_STYLES = [("bars", "Bars"), ("mirror", "Mirrored bars"), ("blocks", "LED blocks"),
               ("wave", "Wave"), ("mirrorwave", "Mirrored wave"), ("radial", "Radial ring"),
-              ("orb", "Orb (round wave)"), ("frame", "Frame (around a panel)")]
+              ("orb", "Orb (round wave)"), ("particles", "Particle fountain"), ("dots", "Dot columns"),
+              ("frame", "Frame (around a panel)")]
 VIS_COLORS = [("gradient", "Palette gradient"), ("accent", "Accent"), ("accent2", "Second accent"),
               ("foreground", "Text"), ("red", "Red"), ("green", "Green"), ("yellow", "Yellow"),
               ("blue", "Blue"), ("magenta", "Magenta"), ("cyan", "Cyan")]
 VIS_TEMPLATES = [("bottom", "Bars along the bottom"), ("center", "Mirrored bars, centered"),
                  ("radial", "Radial ring"), ("wave", "Wave"), ("mirrorwave", "Mirrored wave"),
-                 ("led", "LED meter"), ("orb", "Spinning orb"), ("frame", "Frame around a panel")]
+                 ("led", "LED meter"), ("orb", "Spinning orb"), ("particles", "Particle fountain"),
+                 ("dots", "Dot columns"), ("frame", "Frame around a panel")]
 
 
 def vis_template(kind="bottom"):
@@ -2407,7 +3055,7 @@ def vis_template(kind="bottom"):
          "rounded": True, "stereo": False, "flip": False, "color": "gradient", "opacity": 90,
          "smoothing": 77, "framerate": 60, "alignment": "bottom_middle", "gap_x": 0, "gap_y": 0,
          "width": 0, "height": 160, "screen": "", "x11": True, "autostart": False,
-         "glow": False, "wrap": "", "depth": 36, "peaks": False, "spin": 0}
+         "glow": False, "wrap": "", "depth": 36, "peaks": False, "spin": 0, "flow": False}
     presets = {
         "bottom": dict(name="Bottom bars", bars=96, gap=30, height=150, opacity=85, peaks=True),
         "center": dict(name="Center bars", style="mirror", bars=72, width=1100, height=260,
@@ -2421,6 +3069,10 @@ def vis_template(kind="bottom"):
                     alignment="bottom_left", gap_x=40, gap_y=60, rounded=False, peaks=True),
         "orb": dict(name="Spinning orb", style="orb", bars=64, width=420, height=420, alignment="middle_right",
                     gap_x=140, stereo=True, glow=True, spin=14, opacity=85),
+        "particles": dict(name="Particle fountain", style="particles", bars=48, height=320, opacity=90,
+                          stereo=True, glow=True, flow=True),
+        "dots": dict(name="Dot columns", style="dots", bars=40, gap=30, width=700, height=200, peaks=True,
+                     alignment="bottom_middle", gap_y=40),
         "frame": dict(name="Panel frame", style="frame", bars=120, gap=40, depth=30, stereo=True, glow=True,
                       width=480, height=300, alignment="middle_middle"),
     }
@@ -2544,7 +3196,55 @@ def _closed_spline(pts):
     return path
 
 
-def _draw_vis(qp, rect, vals, v, cols, grow=0.0, peaks=None, t=0.0):
+def flow_colors(cols, k, n=6):
+    """The gradient rotated by k (0..1) around a loop - for slowly flowing colors."""
+    if len(cols) < 2:
+        return list(cols)
+    ring = list(cols) + [cols[0]]
+    out = []
+    for i in range(n):
+        pos = ((i / (n - 1)) + k) % 1.0 * (len(ring) - 1)
+        j = int(pos)
+        out.append(mix(ring[j], ring[min(j + 1, len(ring) - 1)], pos - j))
+    return out
+
+
+class ParticleSim:
+    """Sparks thrown up by rising bars, falling back under gravity (positions relative to the drawing rect)."""
+    MAX = 450
+
+    def __init__(self, seed=3):
+        self.parts = []
+        self.prev = []
+        self.rng = random.Random(seed)
+
+    def update(self, vals, dt, W, H):
+        n = len(vals)
+        if len(self.prev) != n:
+            self.prev = list(vals)
+        for i, val in enumerate(vals):
+            rise = val - self.prev[i]
+            if rise > 0.03 and val > 0.22 and len(self.parts) < self.MAX:
+                for _ in range(1 + int(rise * 6)):
+                    self.parts.append([(i + 0.5) / n * W + self.rng.uniform(-3, 3), H - val * H * 0.3,
+                                       self.rng.uniform(-35, 35),
+                                       -(140 + 560 * val) * self.rng.uniform(0.7, 1.1) * H / 320,
+                                       1.0, self.rng.uniform(1.5, 3.4)])
+        self.prev = list(vals)
+        g = 760 * H / 320
+        alive = []
+        for p in self.parts:
+            p[2] *= 0.99
+            p[3] += g * dt
+            p[0] += p[2] * dt
+            p[1] += p[3] * dt
+            p[4] -= dt * 0.65
+            if p[4] > 0 and p[1] < H + 8:
+                alive.append(p)
+        self.parts = alive
+
+
+def _draw_vis(qp, rect, vals, v, cols, grow=0.0, peaks=None, t=0.0, sim=None):
     n = len(vals)
     style, flip = v["style"], v["flip"]
     if v.get("wrap"):
@@ -2658,6 +3358,37 @@ def _draw_vis(qp, rect, vals, v, cols, grow=0.0, peaks=None, t=0.0):
 
     cap = QColor(mix(cols[-1], "#ffffff", 0.25))
     caps = peaks if (peaks and not grow and len(peaks) == n) else None
+    if style == "particles":
+        base = 0.3
+        if not grow:
+            qp.setOpacity(op * 0.55)
+            for i, val in enumerate(vals):
+                h = val * H * base
+                if h >= 0.5:
+                    box(QRectF(bar_x(i), T + H - h, bw, h), min(bw / 2, h / 2) if v["rounded"] else 0)
+            qp.setOpacity(op)
+        if sim is not None:
+            for x, y, _vx, _vy, life, size in sim.parts:
+                frac = clamp(1 - y / max(1.0, H))
+                col = cols[min(len(cols) - 1, int(frac * (len(cols) - 1) + 0.5))]
+                qp.setBrush(_alpha(col, clamp(life * 1.4)))
+                qp.drawEllipse(QPointF(L + x, T + y), size + grow, size + grow)
+        return
+    if style == "dots":
+        d = max(2.0, bw)
+        step = d * 1.3
+        total = max(1, int(H // step))
+        for i, val in enumerate(vals):
+            cx = bar_x(i) + bw / 2
+            for k in range(int(round(val * total))):
+                cy_ = T + H - k * step - d / 2
+                qp.drawEllipse(QPointF(cx, cy_), d / 2 + grow, d / 2 + grow)
+        if caps:
+            qp.setBrush(cap)
+            for i, (pk, _) in enumerate(caps):
+                k = min(total - 1, int(round(pk * total)))
+                qp.drawEllipse(QPointF(bar_x(i) + bw / 2, T + H - k * step - d / 2), d / 2, d / 2)
+        return
     if style == "bars":
         for i, val in enumerate(vals):
             h = val * H
@@ -2726,11 +3457,13 @@ def _draw_vis(qp, rect, vals, v, cols, grow=0.0, peaks=None, t=0.0):
         qp.drawPath(shape)
 
 
-def paint_visualizer(qp, rect, vals, v, p, peaks=None, t=0.0):
+def paint_visualizer(qp, rect, vals, v, p, peaks=None, t=0.0, sim=None):
     n = len(vals)
     if not n or rect.width() < 4 or rect.height() < 4:
         return
     cols = list(p["gradient"]) if v["color"] == "gradient" else [role_color(p, v["color"])]
+    if v.get("flow") and len(cols) > 1:
+        cols = flow_colors(cols, t * 0.07)
     base_op = clamp(v["opacity"] / 100) * qp.opacity()
     qp.save()
     qp.setRenderHint(QPainter.Antialiasing)
@@ -2738,9 +3471,9 @@ def paint_visualizer(qp, rect, vals, v, p, peaks=None, t=0.0):
         bass = bass_level(vals, v["stereo"])
         for grow, strength in ((7, 0.10), (4, 0.16), (2, 0.22)):
             qp.setOpacity(base_op * strength * (0.3 + 1.2 * bass))
-            _draw_vis(qp, rect, vals, v, cols, grow, None, t)
+            _draw_vis(qp, rect, vals, v, cols, grow, None, t, sim)
     qp.setOpacity(base_op)
-    _draw_vis(qp, rect, vals, v, cols, 0, peaks, t)
+    _draw_vis(qp, rect, vals, v, cols, 0, peaks, t, sim)
     qp.restore()
 
 
@@ -2838,6 +3571,7 @@ class VisualizerWindow(DesktopWindow):
         self.setWindowTitle(f"themeforge-vis-{vid}")
         self.vals = []
         self.peaks = []
+        self.sim = ParticleSim()
         self.last_audio = time.monotonic()
         self.v = None
         self.feed = AudioFeed(vid, self)
@@ -2864,6 +3598,8 @@ class VisualizerWindow(DesktopWindow):
         self.last_audio = now
         self.vals = vals
         self.peaks = update_peaks(self.peaks, vals, dt)
+        if self.v and self.v["style"] == "particles":
+            self.sim.update(vals, dt, self.width(), self.height())
         self.update()
 
     def paintEvent(self, e):
@@ -2872,7 +3608,7 @@ class VisualizerWindow(DesktopWindow):
         qp = QPainter(self)
         qp.setOpacity(ease_out(self.appear()))
         paint_visualizer(qp, QRectF(self.rect()), self.vals, self.v, self.shown_palette(),
-                         self.peaks if self.v.get("peaks") else None, time.monotonic() - self.born)
+                         self.peaks if self.v.get("peaks") else None, time.monotonic() - self.born, self.sim)
         qp.end()
 
     def shutdown(self):
@@ -2895,7 +3631,8 @@ def update_peaks(peaks, vals, dt, hold=0.35, fall=0.9):
 
 
 class PanelWindow(DesktopWindow):
-    """Clickable desktop panel: games launcher, now playing card, clock, system gauges or weather."""
+    """Clickable desktop panel (launcher, now playing, clock, system, weather, calendar, countdown, drives,
+    network graph or notes)."""
     art_ready = Signal(str, object)
     stats_ready = Signal(object)
     weather_ready = Signal(object, object)
@@ -2917,6 +3654,17 @@ class PanelWindow(DesktopWindow):
         self.stats_stop = threading.Event()
         self.stats_thread = None
         self.weather, self.weather_error, self.weather_key = None, None, None
+        self.fade, self.fade_target = 0.0, 0.0
+        self.moving, self.drag_offset = False, None
+        self.month_offset, self.month_anim = 0, 0.0
+        self.drives, self.drive_shown = [], {}
+        self.net_hist, self.net_prev, self.net_t, self.net_max = [], None, 0.0, 0.0
+        self.check_anim = {}
+        self.notes_watch = QFileSystemWatcher(self)
+        self.notes_watch.fileChanged.connect(lambda *_: self.notes_changed())
+        self.notes_watch.directoryChanged.connect(lambda *_: self.notes_changed())
+        self.data_timer = QTimer(self)
+        self.data_timer.timeout.connect(self.sample_data)
         self.watcher = QFileSystemWatcher(self)
         self.watcher.directoryChanged.connect(lambda *_: self.load_items())
         self.feed = AudioFeed(f"panel-{pid}", self)
@@ -2965,7 +3713,25 @@ class PanelWindow(DesktopWindow):
                 self.weather_error = None
                 self.fetch_weather()
                 self.weather_timer.start()
-        if kind in ("clock", "nowplaying", "weather") and not panel["animations"]:
+        if kind in ("drives", "network"):
+            self.data_timer.setInterval(10_000 if kind == "drives" else 1000)
+            if not self.data_timer.isActive():
+                self.data_timer.start()
+                self.sample_data()
+        if kind == "notes":
+            path = notes_path(panel)
+            for w in (self.notes_watch.files(), self.notes_watch.directories()):
+                if w:
+                    self.notes_watch.removePaths(w)
+            if path.exists():
+                self.notes_watch.addPath(str(path))
+            if path.parent.is_dir():
+                self.notes_watch.addPath(str(path.parent))
+        if kind == "calendar":
+            self.slow.setInterval(60_000)
+            self.slow.start()
+        elif kind in ("clock", "nowplaying", "weather", "countdown", "network") and not panel["animations"]:
+            self.slow.setInterval(1000)
             self.slow.start()
         else:
             self.slow.stop()
@@ -2981,7 +3747,8 @@ class PanelWindow(DesktopWindow):
 
     def place(self):
         scr = screen_for(self.panel["screen"])
-        r = panel_rect(self.panel, QRectF(scr.availableGeometry()), len(self.items))
+        n = (len(self.drives) or 1) if self.panel["kind"] == "drives" else len(self.items)
+        r = panel_rect(self.panel, QRectF(scr.availableGeometry()), n)
         m = GLOW_MARGIN
         self.setGeometry(r.adjusted(-m, -m, m, m).toRect())
 
@@ -2990,7 +3757,7 @@ class PanelWindow(DesktopWindow):
         p = self.panel
         if not p or not p["animations"]:
             return False
-        if p["shimmer"] or p["kind"] in ("clock", "weather"):
+        if p["shimmer"] or p.get("pulse") or p["kind"] in ("clock", "weather", "countdown", "network"):
             return True
         if p["kind"] == "nowplaying":
             return bool(self.np and self.np["status"] == "Playing")
@@ -3000,8 +3767,33 @@ class PanelWindow(DesktopWindow):
         p = self.panel
         if not p:
             return False
+        dt *= max(0.25, p.get("anim_speed", 100) / 100)
         busy = self.continuous()
         k = min(1.0, dt * 12)
+        if self.fade != self.fade_target:                     # fade-on-hover
+            self.fade += (self.fade_target - self.fade) * min(1.0, dt * 8)
+            if abs(self.fade - self.fade_target) < 0.01:
+                self.fade = self.fade_target
+            busy = True
+        if self.month_anim:                                   # calendar month slide
+            d = dt * 4
+            self.month_anim = 0.0 if abs(self.month_anim) <= d else self.month_anim - math.copysign(d,
+                                                                                                    self.month_anim)
+            busy = True
+        for i in list(self.check_anim):                       # to-do tick pop
+            self.check_anim[i] = min(1.0, self.check_anim[i] + dt / 0.35)
+            if self.check_anim[i] >= 1.0:
+                del self.check_anim[i]
+            busy = True
+        for d in self.drives:                                 # drive bars fill smoothly
+            target = d["used"] / d["total"]
+            cur = self.drive_shown.get(d["mount"], 0.0)
+            nxt = cur + (target - cur) * min(1.0, dt * 3)
+            self.drive_shown[d["mount"]] = target if abs(nxt - target) < 0.002 else nxt
+            busy = busy or self.drive_shown[d["mount"]] != target
+        if self.net_hist:                                     # graph scale eases to the new peak
+            want = max(max(max(h) for h in self.net_hist) * 1.15, 1024.0)
+            self.net_max += (want - self.net_max) * min(1.0, dt * 3)
         for i in list(self.hover_amt):                        # hover in/out
             target = 1.0 if self.hover == ("item", i) else 0.0
             self.hover_amt[i] += (target - self.hover_amt[i]) * k
@@ -3026,6 +3818,15 @@ class PanelWindow(DesktopWindow):
         for m, (target, _) in self.stats.items():             # gauges glide to new values
             if m == "net":
                 continue
+            if isinstance(target, list):
+                cur = self.shown.get(m) or [0.0] * len(target)
+                if len(cur) != len(target):
+                    cur = [0.0] * len(target)
+                nxt = [c + (tg - c) * min(1.0, dt * 4) for c, tg in zip(cur, target)]
+                done = all(abs(a - b) < 0.002 for a, b in zip(nxt, target))
+                self.shown[m] = list(target) if done else nxt
+                busy = busy or not done
+                continue
             cur = self.shown.get(m, 0.0)
             nxt = cur + (target - cur) * min(1.0, dt * 4)
             self.shown[m] = target if abs(nxt - target) < 0.002 else nxt
@@ -3038,7 +3839,42 @@ class PanelWindow(DesktopWindow):
                 "ripples": self.ripples, "np": self.live_np(), "art": self.art, "art_prev": self.art_prev,
                 "art_mix": self.art_mix, "vinyl": self.vinyl, "title_since": self.title_since - self.born,
                 "glow": self.glow, "now": time.time(), "stats": self.stats, "shown": self.shown,
-                "weather": self.weather, "weather_error": self.weather_error}
+                "weather": self.weather, "weather_error": self.weather_error, "fade": self.fade,
+                "moving": self.moving, "month_offset": self.month_offset, "month_anim": self.month_anim,
+                "drives": self.drives, "drive_shown": self.drive_shown, "net_hist": self.net_hist,
+                "net_max": self.net_max, "net_phase": clamp(time.monotonic() - self.net_t),
+                "check_anim": self.check_anim}
+
+    # ── drives, network, notes
+    def sample_data(self):
+        kind = self.panel["kind"]
+        if kind == "drives":
+            before = len(self.drives)
+            self.drives = drives_info(self.panel.get("mounts", ""))
+            if len(self.drives) != before:
+                self.place()
+        elif kind == "network":
+            try:
+                rx, tx = _net_bytes()
+            except OSError:
+                return
+            now = time.monotonic()
+            if self.net_prev:
+                dt = max(0.001, now - self.net_prev[0])
+                self.net_hist.append((max(0, rx - self.net_prev[1]) / dt, max(0, tx - self.net_prev[2]) / dt))
+                self.net_hist = self.net_hist[-(self.panel["graph_seconds"] + 2):]
+                self.net_t = now
+            self.net_prev = (now, rx, tx)
+        self.kick()
+        self.update()
+
+    def notes_changed(self):
+        path = notes_path(self.panel)
+        if path.exists() and str(path) not in self.notes_watch.files():
+            self.notes_watch.addPath(str(path))       # editors that save by replacing the file
+        self.place()
+        self.kick()
+        self.update()
 
     # ── launcher
     def load_items(self):
@@ -3155,7 +3991,16 @@ class PanelWindow(DesktopWindow):
     def hit(self, pos):
         return panel_hit(self.panel, len(self.items), QPointF(pos.x() - GLOW_MARGIN, pos.y() - GLOW_MARGIN))
 
+    def enterEvent(self, e):
+        if self.panel and self.panel.get("hover_fade") and not self.moving:
+            self.fade_target = 1.0
+            self.kick()
+
     def mouseMoveEvent(self, e):
+        if self.moving:
+            if self.drag_offset is not None:
+                self.move((e.globalPosition() - self.drag_offset).toPoint())
+            return
         h = self.hit(e.position())
         if h != self.hover:
             self.hover = h
@@ -3172,14 +4017,48 @@ class PanelWindow(DesktopWindow):
 
     def leaveEvent(self, e):
         self.hover = None
+        self.fade_target = 0.0
         self.kick()
         self.update()
+
+    def start_move(self):
+        self.moving = True
+        self.fade = self.fade_target = 0.0
+        self.setCursor(Qt.SizeAllCursor)
+        self.update()
+
+    def mouseReleaseEvent(self, e):
+        if self.moving and self.drag_offset is not None:
+            self.drag_offset = None
+            self.moving = False
+            self.setCursor(Qt.ArrowCursor)
+            self.save_position()
+            self.update()
+
+    def save_position(self):
+        """Turn where the window was dropped into offsets for its alignment, snapped to 4 px."""
+        g = QRectF(screen_for(self.panel["screen"]).availableGeometry())
+        m = GLOW_MARGIN
+        r = QRectF(self.geometry()).adjusted(m, m, -m, -m)
+        vert, horiz = self.panel["alignment"].split("_")
+        gx = {"left": r.left() - g.left(), "middle": r.left() - (g.left() + (g.width() - r.width()) / 2),
+              "right": g.right() + 1 - r.right() - 1}[horiz]
+        gy = {"top": r.top() - g.top(), "middle": r.top() - (g.top() + (g.height() - r.height()) / 2),
+              "bottom": g.bottom() + 1 - r.bottom() - 1}[vert]
+        s = load_settings()
+        for x in s["panels"]:
+            if x["id"] == self.item_id:
+                x["gap_x"], x["gap_y"] = int(round(gx / 4) * 4), int(round(gy / 4) * 4)
+        save_settings(s)
 
     def mousePressEvent(self, e):
         if e.button() == Qt.RightButton:
             self.context_menu(e.globalPosition().toPoint())
             return
         if e.button() != Qt.LeftButton:
+            return
+        if self.moving:
+            self.drag_offset = e.globalPosition() - QPointF(self.pos())
             return
         h = self.hit(e.position())
         if not h:
@@ -3199,6 +4078,17 @@ class PanelWindow(DesktopWindow):
             QTimer.singleShot(250, self.poll_np)
         elif kind == "forecast":
             QDesktopServices.openUrl(QUrl(weather_url(self.panel["location"], fmt=False)))
+        elif kind == "month":
+            self.month_offset = 0 if arg == 0 else self.month_offset + arg
+            self.month_anim = float(arg) if arg else 0.6
+            self.kick()
+        elif kind == "check":
+            try:
+                if toggle_note(self.panel, arg):
+                    self.check_anim[arg] = 0.0
+                    self.notes_changed()
+            except OSError as err:
+                print(f"notes: {err}", file=sys.stderr)
 
     def context_menu(self, pos):
         m = QMenu(self)
@@ -3210,6 +4100,15 @@ class PanelWindow(DesktopWindow):
             m.addAction("Refresh").triggered.connect(self.load_items)
         if self.panel["kind"] == "weather":
             m.addAction("Refresh weather").triggered.connect(self.fetch_weather)
+        if self.panel["kind"] == "notes":
+            m.addAction("Edit notes").triggered.connect(
+                lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(ensure_notes_file(self.panel)))))
+        if self.panel["kind"] == "calendar":
+            m.addAction("Back to this month").triggered.connect(
+                lambda: (setattr(self, "month_offset", 0), self.update()))
+        if self.panel["kind"] == "drives":
+            m.addAction("Refresh").triggered.connect(self.sample_data)
+        m.addAction("Move this panel").triggered.connect(self.start_move)
         m.addAction("Edit in ThemeForge").triggered.connect(
             lambda: subprocess.Popen([sys.executable, str(SCRIPT)], start_new_session=True))
         m.addSeparator()
@@ -3219,6 +4118,9 @@ class PanelWindow(DesktopWindow):
     def shutdown(self):
         self.stats_stop.set()
         self.feed.stop()
+        if self.np_proc.state() != QProcess.NotRunning:
+            self.np_proc.kill()
+            self.np_proc.waitForFinished(500)
 
 
 def icon_for_item(it):
@@ -5783,6 +6685,8 @@ class VisualizerPreview(QWidget):
         self.wall_path = None
         self.panels = []
         self.peaks = []
+        self.sim = ParticleSim()
+        self.sim_t = time.monotonic()
         self.t = 0.0
         self.setMinimumSize(380, 260)
         self.timer = QTimer(self)
@@ -5874,8 +6778,13 @@ class VisualizerPreview(QWidget):
                              self.v, p, self.peaks if self.v.get("peaks") else None, self.t)
             qp.restore()
         else:
-            paint_visualizer(qp, vr, fake_spectrum(n, self.t, self.v["stereo"]), self.v, p,
-                             self.peaks if self.v.get("peaks") else None, self.t)
+            vals = fake_spectrum(n, self.t, self.v["stereo"])
+            if self.v["style"] == "particles":
+                now = time.monotonic()
+                self.sim.update(vals, min(0.1, now - self.sim_t), vr.width(), vr.height())
+                self.sim_t = now
+            paint_visualizer(qp, vr, vals, self.v, p, self.peaks if self.v.get("peaks") else None, self.t,
+                             self.sim)
         qp.end()
 
 
@@ -5892,6 +6801,7 @@ class VisualizersTab(QWidget):
             ("flip", "bool", "Hang from the top", None),
             ("glow", "bool", "Glow with the bass", None),
             ("peaks", "bool", "Falling peak caps", None),
+            ("flow", "bool", "Flowing colors", None),
             ("spin", "int", "Spin (ring, orb, frame)", (0, 360, " °/s")),
             ("opacity", "int", "Opacity", (5, 100, " %")),
             ("smoothing", "int", "Smoothing", (0, 100, " %")),
@@ -6213,6 +7123,7 @@ class PanelPreview(QWidget):
         self.items = []
         self.icons = {}
         self.folder = None
+        self.drives, self.drives_at = [], 0.0
         self.t = 0.0
         self.setMinimumSize(380, 300)
         self.timer = QTimer(self)
@@ -6244,8 +7155,7 @@ class PanelPreview(QWidget):
 
     def tick(self):
         self.t += 0.04
-        if self.panel and (self.panel["glow"] or self.panel["shimmer"]
-                           or self.panel["kind"] in ("nowplaying", "clock", "system", "weather")):
+        if self.panel:
             self.update()
 
     def paintEvent(self, e):
@@ -6270,7 +7180,10 @@ class PanelPreview(QWidget):
             return
         panel = self.panel
         items = self.items if panel["kind"] == "launcher" else []
-        _lay, full = panel_layout(panel, len(items))
+        if panel["kind"] == "drives":
+            if time.time() - self.drives_at > 5:
+                self.drives, self.drives_at = drives_info(panel.get("mounts", "")) or SAMPLE_DRIVES, time.time()
+        _lay, full = panel_layout(panel, len(self.drives) if panel["kind"] == "drives" else len(items))
         m = GLOW_MARGIN
         scale = min(1.0, (r.width() - 2 * m) / full.width(), (r.height() - 2 * m) / full.height())
         area = QRectF(m, m, (r.width() - 2 * m) / scale, (r.height() - 2 * m) / scale)
@@ -6281,10 +7194,14 @@ class PanelPreview(QWidget):
         glow = bass_level(fake_spectrum(24, self.t)) if (panel["glow"] or panel["kind"] == "nowplaying") else 0.0
         stats = fake_stats(self.t)
         qp.scale(scale, scale)
+        hist = [(2.2e6 + 1.6e6 * math.sin((self.t - k) * 0.35) * math.cos((self.t - k) * 0.11),
+                 2.4e5 + 1.5e5 * math.sin((self.t - k) * 0.5)) for k in range(panel["graph_seconds"], -1, -1)]
         paint_panel(qp, pos, panel, p, {"t": self.t, "items": items, "icons": self.icons, "np": np, "glow": glow,
                                         "vinyl": (self.t * 130) % 360, "now": time.time(), "stats": stats,
                                         "shown": {m: v[0] for m, v in stats.items() if m != "net"},
-                                        "weather": sample_weather(panel["weather_units"])})
+                                        "weather": sample_weather(panel["weather_units"]),
+                                        "drives": self.drives, "net_hist": hist,
+                                        "net_max": max(max(h) for h in hist) * 1.15, "net_phase": self.t % 1.0})
         qp.end()
 
 
@@ -6305,13 +7222,24 @@ class PanelsTab(QWidget):
                     ("weather_units", "combo", "Units", [("us", "°F, mph"), ("metric", "°C, km/h")]),
                     ("forecast_days", "int", "Forecast days", (0, 3, "")),
                     ("refresh", "int", "Refresh every", (5, 180, " min"))],
+        "calendar": [("week_start", "combo", "Week starts on", [("sunday", "Sunday"), ("monday", "Monday")])],
+        "countdown": [("event", "text", "Counting down to", None), ("target", "datetime", "Date and time", None)],
+        "drives": [("mounts", "text", "Mount points (blank = all)", None)],
+        "network": [("graph_seconds", "int", "History", (10, 600, " s")),
+                    ("graph_height", "int", "Graph height", (30, 300, " px"))],
+        "notes": [("notes_file", "file", "Notes file", None), ("max_lines", "int", "Show up to", (1, 60, " lines"))],
     }
     LOOK = [("name", "text", "Name", None), ("title", "text", "Title", None),
-            ("width", "int", "Width", (120, 2000, " px")), ("opacity", "int", "Background", (0, 100, " %")),
+            ("width", "int", "Width", (120, 2000, " px")), ("background", "combo", "Background", BACKGROUNDS),
+            ("opacity", "int", "Opacity", (0, 100, " %")), ("highlight", "combo", "Highlight color", HIGHLIGHTS),
+            ("font", "font", "Font", None), ("font_scale", "int", "Text size", (60, 160, " %")),
             ("radius", "int", "Corner radius", (0, 60, " px")), ("padding", "int", "Padding", (4, 80, " px")),
-            ("border", "bool", "Outline", None), ("shimmer", "bool", "Animated shimmer outline", None),
-            ("glow", "bool", "Glow with the bass (needs cava)", None),
-            ("animations", "bool", "Animations (fade-in, hover, motion)", None)]
+            ("border", "bool", "Outline", None), ("shadow", "bool", "Drop shadow", None)]
+    MOTION = [("animations", "bool", "Animations", None), ("entrance", "combo", "Entrance", ENTRANCES),
+              ("anim_speed", "int", "Animation speed", (25, 300, " %")),
+              ("shimmer", "bool", "Animated shimmer outline", None), ("pulse", "bool", "Breathing glow", None),
+              ("glow", "bool", "Glow with the bass (needs cava)", None),
+              ("hover_fade", "bool", "Fade out while the mouse is over it", None)]
     PLACE = [("alignment", "combo", "Position", ALIGNMENTS), ("gap_x", "int", "Offset  ↔", (-8000, 8000, " px")),
              ("gap_y", "int", "Offset  ↕", (-8000, 8000, " px")), ("screen", "screen", "Screen", None),
              ("x11", "bool", "Pin to exact position (runs through XWayland)", None),
@@ -6351,8 +7279,8 @@ class PanelsTab(QWidget):
             row.addWidget(b)
         lv.addLayout(row)
         lv.addWidget(hint_label("Panels are animated, clickable windows on your desktop, drawn by ThemeForge "
-                                "in your palette: a games launcher, a now playing card, a clock, system gauges "
-                                "and the weather."))
+                                "in your palette. Right-click one on the desktop → Move this panel to drag it "
+                                "into place."))
         split.addWidget(left)
 
         mid_scroll = QScrollArea()
@@ -6384,8 +7312,11 @@ class PanelsTab(QWidget):
             b.clicked.connect(fn)
             tl.addWidget(b)
         self.content_form.addRow("", self.launcher_tools)
+        self.notes_tools = QPushButton("Create the notes file with an example")
+        self.notes_tools.clicked.connect(self.create_notes)
+        self.content_form.addRow("", self.notes_tools)
         mv.addWidget(gb)
-        for title, fields in (("Look", self.LOOK), ("Placement", self.PLACE)):
+        for title, fields in (("Look", self.LOOK), ("Motion", self.MOTION), ("Placement", self.PLACE)):
             gb = QGroupBox(title)
             f = QFormLayout(gb)
             for key, ftype, label, opts in fields:
@@ -6455,14 +7386,26 @@ class PanelsTab(QWidget):
                     key, [k2 for k2, c in box.boxes.items() if c.isChecked()]))
                 w.boxes[k] = cb
                 g.addWidget(cb, i // 2, i % 2)
-        elif kind == "folder":
+        elif kind == "font":
+            w = QComboBox()
+            w.addItem("Default", "")
+            for fam in QFontDatabase.families():
+                w.addItem(fam, fam)
+            w.currentIndexChanged.connect(lambda i, box=w: self.set_field(key, box.itemData(i)))
+        elif kind == "datetime":
+            w = QDateTimeEdit()
+            w.setCalendarPopup(True)
+            w.setDisplayFormat("yyyy-MM-dd  HH:mm")
+            w.dateTimeChanged.connect(lambda dt: self.set_field(key, dt.toString("yyyy-MM-dd HH:mm")))
+        elif kind in ("folder", "file"):
             w = QWidget()
             h = QHBoxLayout(w)
             h.setContentsMargins(0, 0, 0, 0)
             w.edit = QLineEdit()
-            w.edit.editingFinished.connect(lambda: self.set_field(key, w.edit.text().strip() or "~/Games"))
+            fallback = "~/Games" if kind == "folder" else "~/Notes/desktop.md"
+            w.edit.editingFinished.connect(lambda: self.set_field(key, w.edit.text().strip() or fallback))
             b = QPushButton("Browse…")
-            b.clicked.connect(self.browse_folder)
+            b.clicked.connect(self.browse_folder if kind == "folder" else self.browse_notes)
             h.addWidget(w.edit, 1)
             h.addWidget(b)
         else:
@@ -6517,9 +7460,13 @@ class PanelsTab(QWidget):
             elif hasattr(w, "boxes"):
                 for k2, cb in w.boxes.items():
                     cb.setChecked(k2 in val)
+            elif isinstance(w, QDateTimeEdit):
+                dt = QDateTime.fromString(val, "yyyy-MM-dd HH:mm")
+                w.setDateTime(dt if dt.isValid() else QDateTime.currentDateTime())
             else:
                 w.edit.setText(val)
         self.content_form.setRowVisible(self.launcher_tools, kind == "launcher")
+        self.content_form.setRowVisible(self.notes_tools, kind == "notes")
         self.loading = False
         self.refresh_preview()
         self.refresh_status()
@@ -6549,6 +7496,24 @@ class PanelsTab(QWidget):
             path = "~" + path[len(str(HOME)):] if path.startswith(str(HOME)) else path
             self.inputs["folder"].edit.setText(path)
             self.set_field("folder", path)
+
+    def browse_notes(self):
+        if not self.cur:
+            return
+        start = str(notes_path(self.cur))
+        path, _ = QFileDialog.getSaveFileName(self, "Notes file (it's created if it doesn't exist)", start,
+                                              "Notes (*.md *.txt);;All files (*)",
+                                              options=QFileDialog.DontConfirmOverwrite)
+        if path:
+            path = "~" + path[len(str(HOME)):] if path.startswith(str(HOME)) else path
+            self.inputs["notes_file"].edit.setText(path)
+            self.set_field("notes_file", path)
+
+    def create_notes(self):
+        if self.cur:
+            path = ensure_notes_file(self.cur)
+            self.refresh_preview()
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def copy_from_desktop(self):
         if not self.cur:

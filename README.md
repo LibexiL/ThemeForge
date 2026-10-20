@@ -55,21 +55,33 @@ While a widget is running, edits show up on it live.
 ![Panels tab](docs/screenshots/panels.png)
 
 Panels are animated, clickable windows on your desktop, drawn by ThemeForge in your palette.
-- **Games launcher** shows every shortcut in a folder (`~/Games` by default) as an icon grid. Icons lift and glow on hover and bounce when clicked. One click copies the game shortcuts from your Desktop.
-- **Now playing card** shows album art (square, or a spinning record) that crossfades between songs, scrolls long titles, has a seekable progress bar, and playback buttons that pulse with the bass.
-- **Clock**: digital with a sweeping seconds ring, a plain digital clock, or analog.
-- **System gauges**: animated arc gauges for CPU, RAM, GPU, temperatures and disk, plus network speed. NVIDIA and AMD GPUs are supported.
-- **Weather**: animated icons and a 3-day forecast from wttr.in.
 
-Any panel can **glow with the bass** or get an **animated shimmer outline**. Colors blend smoothly whenever your palette changes.
+| Panel | What it does |
+|---|---|
+| Games launcher | Every shortcut in a folder as an icon grid. Icons lift and glow on hover and bounce when clicked. |
+| Now playing | Album art (square or a spinning record), scrolling titles, a seekable progress bar and playback buttons that pulse with the bass. |
+| Clock | Digital with a sweeping seconds ring, plain digital, or analog. |
+| System gauges | Animated arc gauges for CPU, RAM, GPU (NVIDIA or AMD), temperatures and disk, plus per-thread CPU bars and network speed. |
+| Weather | Animated icons and a 3-day forecast from wttr.in. |
+| Calendar | Month view you can page through. Today glows. |
+| Countdown | Days, hours, minutes and seconds to any date, with flip-clock digits. |
+| Drives | Free space on every drive, detected automatically. |
+| Network graph | Live download and upload, scrolling smoothly. |
+| Notes & to-do | Shows a Markdown file. Click checkboxes to tick them off in the file itself. |
+
+Every panel can be customized:
+- **Look:** background (solid, gradient, frosted glass, outline), highlight color, font, text size, corner radius, drop shadow.
+- **Motion:** entrance (fade, slide, pop), animation speed, breathing glow, animated shimmer outline, glow with the bass, and fade-out while the mouse is over it.
+
+To place a panel, right-click it on the desktop → **Move this panel** and drag it where you want.
 
 ### Music visualizers
 
 ![Visualizers tab](docs/screenshots/visualizers.png)
 
 Run as many as you want at once, each in its own click-through window:
-- **8 styles:** bars, mirrored bars, LED blocks, wave, mirrored wave, radial ring, a glowing **orb**, and a **frame** that wraps around a panel. A frame around the now playing card turns it into a speaker.
-- **Motion:** falling **peak caps**, and **spin** for the ring, orb and frame.
+- **10 styles:** bars, mirrored bars, LED blocks, dot columns, wave, mirrored wave, radial ring, a glowing **orb**, a **particle fountain**, and a **frame** that wraps around a panel. A frame around the now playing card turns it into a speaker.
+- **Motion:** falling **peak caps**, **spin** for the ring, orb and frame, and **flowing colors** that cycle the gradient.
 - **Appearance:** palette gradient or a single color, stereo mode with bass in the middle, rounded bars, bass glow, opacity, smoothing and frame rate.
 - **Placement:** any corner or edge, offset in pixels, and choice of monitor.
 
