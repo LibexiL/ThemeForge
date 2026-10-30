@@ -42,7 +42,7 @@ def build():
         if f.name == "index.json":
             continue
         try:
-            t = json.loads(f.read_text())
+            t = json.loads(f.read_text(encoding="utf-8"))
         except json.JSONDecodeError as e:
             errors.append(f"{f.name}: not valid JSON ({e})")
             continue
@@ -63,12 +63,12 @@ def main():
         print("\n".join(errors), file=sys.stderr)
         sys.exit(1)
     if "--check" in sys.argv:
-        if not INDEX.exists() or INDEX.read_text() != text:
+        if not INDEX.exists() or INDEX.read_text(encoding="utf-8") != text:
             print("themes/index.json is out of date - run: python3 tools/build_theme_index.py", file=sys.stderr)
             sys.exit(1)
         print(f"{len(index['themes'])} community themes OK")
         return
-    INDEX.write_text(text)
+    INDEX.write_text(text, encoding="utf-8")
     print(f"Wrote {INDEX.relative_to(ROOT)} with {len(index['themes'])} themes")
 
 

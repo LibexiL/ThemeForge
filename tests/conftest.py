@@ -57,3 +57,13 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if item.name in LINUX_ONLY:
             item.add_marker(skip)
+
+
+def pytest_terminal_summary(terminalreporter):
+    """On GitHub Actions, turn each failure into an annotation so it shows on the run's summary page."""
+    if not os.environ.get("GITHUB_ACTIONS"):
+        return
+    for rep in terminalreporter.stats.get("failed", []) + terminalreporter.stats.get("error", []):
+        text = str(rep.longrepr)[-3000:]
+        text = text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        terminalreporter.write_line(f"::error title={sys.platform} {rep.nodeid}::{text}")

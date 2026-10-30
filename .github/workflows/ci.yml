@@ -47,21 +47,25 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: python -m pytest -q tests
       - name: Self-test from source
+        if: always()
         env:
           THEMEFORGE_SELFTEST_PROCESSES: "1"
         run: python themeforge.py --selftest selftest-source.json
       - name: Build the app
+        if: always()
         run: |
           python -m PyInstaller --noconfirm --clean --windowed --name ThemeForge `
             --icon packaging\windows\themeforge.ico `
             --collect-submodules winrt --hidden-import pyaudiowpatch themeforge.py
       - name: Self-test the built app
+        if: always()
         env:
           THEMEFORGE_SELFTEST_PROCESSES: "1"
         run: |
           $p = Start-Process dist\ThemeForge\ThemeForge.exe -ArgumentList "--selftest", "$pwd\selftest-frozen.json" -Wait -PassThru
           "exit code $($p.ExitCode)"
       - name: Build the installer
+        if: always()
         run: |
           if (-not (Get-Command iscc -ErrorAction SilentlyContinue) -and -not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) {
             choco install innosetup -y --no-progress
@@ -72,6 +76,7 @@ jobs:
           & $iscc "/DAppVersion=$ver" packaging\windows\themeforge.iss
           if ($LASTEXITCODE) { throw "Inno Setup failed" }
       - name: Install it and self-test the installed app
+        if: always()
         run: |
           $p = Start-Process dist\ThemeForge-Setup.exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
           "installer exit code $($p.ExitCode)"
