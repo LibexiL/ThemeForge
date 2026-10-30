@@ -371,6 +371,7 @@ def test_loopback_feed_with_fake_wasapi(tf, monkeypatch, qapp):
 
 
 def test_audio_feed_factory(tf, monkeypatch):
+    monkeypatch.setattr(tf, "IS_WINDOWS", False)
     assert type(tf.make_audio_feed("x")).__name__ == "AudioFeed"
     monkeypatch.setattr(tf, "IS_WINDOWS", True)
     assert type(tf.make_audio_feed("x")).__name__ == "LoopbackFeed"
@@ -458,6 +459,7 @@ def test_windows_targets_and_defaults(tf, monkeypatch):
     for _key, _name, desc, exe, fn in tf.WINDOWS_TARGETS:
         assert callable(fn) and desc
         tf.target_available(exe)                                 # never raises, even off Windows
+    monkeypatch.setattr(tf, "IS_WINDOWS", False)
     title, text = tf.missing_dep("audio")
     assert "cava" in title
     monkeypatch.setattr(tf, "IS_WINDOWS", True)

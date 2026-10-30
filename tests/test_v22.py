@@ -174,7 +174,7 @@ def test_now_playing_parsing(tf, home):
     assert tf.parse_np("No players found") is None
     art = home / "cover.png"
     art.write_bytes(b"x")
-    assert tf.fetch_art(f"file://{art}") == art
+    assert tf.fetch_art(art.as_uri()) == art
     assert tf.fetch_art("") is None
     assert tf.fmt_time(3725) == "1:02:05" and tf.fmt_time(65) == "1:05"
 
