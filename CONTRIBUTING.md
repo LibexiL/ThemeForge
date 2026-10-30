@@ -28,6 +28,20 @@ python3 themeforge.py                          # run it straight from the clone
 
 A copy running from a git clone never updates itself; use `git pull`.
 
+### Windows
+
+The same file runs on Windows; code that differs checks `IS_WINDOWS`. Most of the Windows code (registry, Windows Terminal, audio capture, media controls, shortcuts, updater) has tests in `tests/test_windows.py` that use fakes, so they run on Linux too.
+
+On Windows:
+
+```powershell
+py -m pip install -r requirements-windows.txt pytest
+$env:QT_QPA_PLATFORM = "offscreen"; py -m pytest -q tests
+py themeforge.py --selftest
+```
+
+The **CI** workflow's `windows` job runs the tests and the self-test from source. It then builds the app with PyInstaller and self-tests it, builds the installer with Inno Setup, installs it, and self-tests the installed copy. Each check shows up as an annotation on the run's summary page.
+
 ## Releasing
 
 1. Bump the version in **both** places:
@@ -43,6 +57,7 @@ A copy running from a git clone never updates itself; use `git pull`.
    - checks the tag matches both versions
    - runs the tests
    - publishes `themeforge.py`, `themeforge.py.sha256` and `install.sh`, with the changelog section as the release notes.
+   - builds the Windows app on a Windows runner, self-tests it, and adds `ThemeForge-Setup.exe`, `ThemeForge-Windows.zip` and their `.sha256` files to the same release.
 
    Installed copies offer the update on their next start.
 

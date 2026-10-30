@@ -1,8 +1,8 @@
 # ThemeForge
 
-**One palette for your whole KDE Plasma desktop.** Pick a theme, pull one from your wallpaper or let it follow the album art of whatever's playing. ThemeForge then recolors your terminal, KDE, your apps and your desktop widgets, panels and music visualizers to match.
+**One palette for your whole desktop.** Pick a theme, pull one from your wallpaper or let it follow the album art of whatever's playing. ThemeForge then recolors your terminal, your desktop, your apps and your desktop panels and music visualizers to match.
 
-Built for **Nobara Linux**, and it works on any Fedora-based KDE Plasma 6 setup.
+Built for **Nobara Linux** and any Fedora-based KDE Plasma 6 setup, and also available for **Windows 10 and 11** ([see below](#windows)).
 
 ![Colors tab](docs/screenshots/colors.png)
 
@@ -125,6 +125,51 @@ sudo dnf install themeforge
 
 Packaged installs are updated by `dnf` rather than the built-in updater.
 
+## Windows
+
+Download **ThemeForge-Setup.exe** from the [latest release](https://github.com/LibexiL/ThemeForge/releases/latest) and run it. It installs just for you (no admin prompt) and adds ThemeForge to the Start menu. Prefer not to install? **ThemeForge-Windows.zip** is a portable copy: unzip it anywhere and run `ThemeForge.exe`.
+
+Neither needs Python. The installed version updates itself: when a new release is out, click **Update** and ThemeForge closes, installs it and opens again, bringing back any panels and visualizers that were running.
+
+> Windows may show a SmartScreen warning the first time, because the installer isn't code-signed. Click **More info → Run anyway**.
+
+### What it themes on Windows
+
+| Target | What happens |
+|---|---|
+| Windows colors | Sets the accent color, dark or light mode (follow the palette, or always dark or light), and optionally colors title bars, Start and the taskbar. |
+| Windows Terminal | Adds a ThemeForge color scheme and makes it the default for every profile. |
+| Panels & visualizers | Everything ThemeForge draws switches colors instantly. |
+| Wallpaper | Sets the image the palette came from. |
+| Discord | Vencord, Vesktop, Equicord or BetterDiscord. |
+| Spotify | Spicetify color scheme. |
+| Starship | Palette for `starship.toml`. |
+| Rainmeter | Writes color variables to `Skins\ThemeForge\@Resources\Colors.inc` that your skins can `@Include`. |
+| Vivaldi | Exports a theme for you to import. |
+
+**Restore my original files** puts back your accent color and light/dark mode as well as any file ThemeForge changed.
+
+### What works differently
+
+- **Panels and visualizers** work as on Linux. They are attached to the desktop and kept out of the taskbar and Alt+Tab.
+- **Visualizers** listen to whatever your speakers or headphones are playing. You don't need cava or anything else.
+- **The now playing card and album-art mode** read the Windows media controls (the ones in the volume flyout). That covers Spotify, browsers, the Media Player app and most other players.
+- **The games launcher** shows `.lnk`, `.url` and `.exe` files, so Steam and Epic desktop shortcuts work. "Copy game shortcuts from my Desktop" also picks up shortcuts on the shared Public desktop.
+- **The keyboard shortcut** for "Next profile" is Ctrl+Alt+Shift+T. You can change it in the shortcut's Properties.
+- **Not available on Windows:** the conky widget builder (panels cover the same things), and the KDE, Konsole, kitty, cava, btop and icon-theme targets.
+- **GPU usage** is read for any GPU. **GPU temperature** needs an NVIDIA GPU, and CPU temperature isn't shown, because Windows doesn't expose it without extra drivers.
+
+### Running from source on Windows
+
+```powershell
+git clone https://github.com/LibexiL/ThemeForge.git
+cd ThemeForge
+py -m pip install -r requirements-windows.txt
+pyw themeforge.py
+```
+
+To build the installer yourself, install [Inno Setup 6](https://jrsoftware.org/isinfo.php) and run `powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1`.
+
 ## Command line
 
 ```
@@ -138,7 +183,10 @@ themeforge --restore           put back every file ThemeForge changed
 themeforge --fix-windows       keep ThemeForge's desktop windows out of the taskbar
 themeforge --start-widgets     start everything marked "start at login"
 themeforge --version
+themeforge --selftest          check that everything works and print a report (handy for bug reports)
 ```
+
+On Windows, run these with `ThemeForge.exe` (in `%LOCALAPPDATA%\Programs\ThemeForge`) instead of `themeforge`.
 
 ## Uninstall
 
@@ -148,6 +196,8 @@ bash uninstall.sh --purge    # also deletes ~/.config/themeforge
 ```
 
 ## Troubleshooting
+
+On Windows, start with `ThemeForge.exe --selftest report.json` and attach `report.json` to your issue. Logs for each panel and visualizer are in `%APPDATA%\ThemeForge\panels` and `%APPDATA%\ThemeForge\visualizers`.
 
 - **A widget, panel or visualizer shows up in the taskbar or sits on top of windows.** ThemeForge adds a KWin rule for its windows (titles starting with `themeforge-`) automatically. If they still misbehave, run `themeforge --fix-windows` and restart them, or look for "ThemeForge widgets, panels and visualizers" in System Settings → Window Management → Window Rules.
 - **Positioning is ignored.** Keep "Pin to exact position (runs through XWayland)" ticked. Native Wayland doesn't let apps choose where their windows go.

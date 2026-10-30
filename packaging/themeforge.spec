@@ -1,5 +1,5 @@
 Name:           themeforge
-Version:        2.4.0
+Version:        2.5.0
 Release:        1%{?dist}
 Summary:        One palette for kitty, cava, KDE Plasma, widgets, panels and visualizers
 
@@ -51,6 +51,9 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/themeforge.desktop
 %{_datadir}/applications/themeforge.desktop
 
 %changelog
+* Fri Oct 30 2026 LibexiL <LibexiL@users.noreply.github.com> - 2.5.0-1
+- Windows version; UTF-8 file handling; --selftest
+
 * Mon Oct 19 2026 LibexiL <LibexiL@users.noreply.github.com> - 2.4.0-1
 - Calendar, countdown, drives, network and notes panels; panel customization; particles
 

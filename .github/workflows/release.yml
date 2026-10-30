@@ -1,7 +1,8 @@
 name: Release
 
 # Push a tag like v2.1.0 to publish a release. Installed copies of ThemeForge
-# find it through the GitHub API and download themeforge.py + its checksum.
+# find it through the GitHub API and download themeforge.py + its checksum
+# (Linux) or ThemeForge-Setup.exe + its checksum (Windows).
 on:
   push:
     tags: ["v*"]
@@ -52,3 +53,32 @@ jobs:
             themeforge.py
             themeforge.py.sha256
             install.sh
+
+  windows:
+    needs: release
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the app, the portable zip and the installer
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+          powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
+          if ($LASTEXITCODE) { throw "build failed" }
+      - name: Self-test the built app
+        run: |
+          $p = Start-Process dist\ThemeForge\ThemeForge.exe -ArgumentList "--selftest", "$pwd\selftest-frozen.json" -Wait -PassThru
+          python tools/selftest_report.py selftest-frozen.json
+          if ($LASTEXITCODE) { throw "self-test failed" }
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/ThemeForge-Setup.exe
+            dist/ThemeForge-Setup.exe.sha256
+            dist/ThemeForge-Windows.zip
+            dist/ThemeForge-Windows.zip.sha256

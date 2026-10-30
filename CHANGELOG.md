@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.5.0] - 2026-10-30
+
+### Added
+- **ThemeForge for Windows 10 and 11.** Download `ThemeForge-Setup.exe`, or the portable `ThemeForge-Windows.zip`. Neither needs Python.
+  - **New targets:**
+    - Windows colors: accent color, dark or light mode, and colored title bars, Start and taskbar.
+    - Windows Terminal: a ThemeForge scheme set as the default.
+    - Rainmeter: color variables for your skins.
+  - **Targets that work on both systems:** wallpaper, Discord, Spotify (Spicetify), Starship and Vivaldi.
+  - **Panels and visualizers** work as on Linux. They are attached to the desktop and kept out of the taskbar and Alt+Tab.
+  - **Visualizers** listen to whatever your speakers are playing (WASAPI loopback), so nothing else needs installing.
+  - **The now playing card and album-art mode** read the Windows media controls: Spotify, browsers, the Media Player app and more.
+  - **The games launcher** reads `.lnk`, `.url` and `.exe` shortcuts, so Steam and Epic shortcuts work.
+  - **System and drive panels** use Windows' own counters. GPU usage works for any GPU, including AMD and Intel.
+  - **The installed version updates itself.** It downloads the new installer, checks its SHA-256 checksum, installs quietly and reopens with your panels and visualizers.
+  - **Start at login** uses your user's Run key. The "Next profile" shortcut is Ctrl+Alt+Shift+T.
+  - "Restore my original files" also puts back your accent color and light/dark mode.
+- `--selftest [report.json]` checks the libraries, settings, stats, drawing, theme writers, audio and media, then writes a report.
+- Every push is now tested and built on Windows by CI. The installer is built and installed, then the app tests itself.
+
+### Fixed
+- Text files are always read and written as UTF-8.
+- Windows Terminal-style settings with a comment just before a closing bracket parse correctly.
+
 ## [2.4.0] - 2026-10-19
 
 ### Added

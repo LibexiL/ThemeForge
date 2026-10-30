@@ -49,17 +49,47 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
                                QScrollArea, QSpinBox, QSplitter, QTabWidget,
                                QToolButton, QVBoxLayout, QWidget)
 
-VERSION = "2.4.0"
+VERSION = "2.5.0"
 # GitHub "owner/repo" the auto-updater checks for new releases
 GITHUB_REPO = "LibexiL/ThemeForge"
+IS_WINDOWS = sys.platform == "win32"
+IS_FROZEN = bool(getattr(sys, "frozen", False))       # the packaged Windows app (PyInstaller)
 HOME = Path.home()
-CFG_DIR = HOME / ".config" / "themeforge"
+if IS_WINDOWS:
+    CFG_DIR = Path(os.environ.get("APPDATA") or HOME / "AppData" / "Roaming") / "ThemeForge"
+    CACHE_DIR = Path(os.environ.get("LOCALAPPDATA") or HOME / "AppData" / "Local") / "ThemeForge" / "cache"
+else:
+    CFG_DIR = HOME / ".config" / "themeforge"
+    CACHE_DIR = HOME / ".cache" / "themeforge"
 SETTINGS_FILE = CFG_DIR / "settings-v2.json"
 THEMES_DIR = CFG_DIR / "themes"
 WIDGETS_DIR = CFG_DIR / "widgets"
 ORIG_DIR = CFG_DIR / "backups" / "originals"
 AUTOSTART_FILE = HOME / ".config" / "autostart" / "themeforge-widgets.desktop"
-SCRIPT = Path(__file__).resolve()
+SCRIPT = Path(sys.executable if IS_FROZEN else __file__).resolve()
+QUIET = (dict(creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)) if IS_WINDOWS
+         else dict(start_new_session=True))     # child processes: no console window / own session
+NOWINDOW = dict(creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)) if IS_WINDOWS else {}
+
+
+def self_command(*args):
+    """Command line that runs this copy of ThemeForge with args (packaged exe, or Python + this script)."""
+    if IS_FROZEN:
+        return [sys.executable, *args]
+    exe = sys.executable
+    if IS_WINDOWS:                          # pythonw: no console window behind GUI processes
+        w = Path(exe).with_name("pythonw.exe")
+        if w.exists():
+            exe = str(w)
+    return [exe, str(SCRIPT), *args]
+
+
+def open_path(path):
+    """Open a file, folder or URL with the system's default app."""
+    if IS_WINDOWS:
+        os.startfile(str(path))           # noqa: S606 - opening the user's own files is the point
+    else:
+        subprocess.Popen(["xdg-open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **QUIET)
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -310,7 +340,7 @@ def ini_get(path, section, key):
     if not path.exists():
         return None
     cur = None
-    for line in path.read_text(errors="replace").splitlines():
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         s = line.strip()
         if s.startswith("["):
             cur = s
@@ -324,7 +354,7 @@ def ini_get(path, section, key):
 def ini_set(path, section, key, value):
     """Set one key in a KDE-style INI file, leaving everything else alone."""
     path = Path(path)
-    lines = path.read_text(errors="replace").splitlines() if path.exists() else []
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines() if path.exists() else []
     header, out = f"[{section}]", []
     in_sec = found = done = False
     for line in lines:
@@ -350,7 +380,7 @@ def ini_set(path, section, key, value):
             out.append("")
         out += [header, f"{key}={value}"]
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(out) + "\n")
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
 
 
 KWIN_RULES = HOME / ".config" / "kwinrulesrc"
@@ -376,7 +406,7 @@ def kwin_reconfigure():
 
 def ensure_kwin_rule():
     """Add (or repair) the KWin rule for ThemeForge's desktop windows. Returns True if it changed anything."""
-    if not (shutil.which("kwin_wayland") or shutil.which("kwin_x11") or KWIN_RULES.exists()):
+    if IS_WINDOWS or not (shutil.which("kwin_wayland") or shutil.which("kwin_x11") or KWIN_RULES.exists()):
         return False                      # not a KDE Plasma session
     try:
         current = {k: ini_get(KWIN_RULES, KWIN_RULE_GROUP, k) for k in KWIN_RULE}
@@ -402,7 +432,7 @@ def run_cmd(cmd, log):
         log(f"   ! {cmd[0]} isn't installed")
         return False
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, **NOWINDOW)
     except Exception as e:
         log(f"   ! {e}")
         return False
@@ -413,6 +443,8 @@ def run_cmd(cmd, log):
 
 
 def signal_procs(name, sig):
+    if IS_WINDOWS or sig is None:
+        return 0
     try:
         pids = subprocess.run(["pgrep", "-x", name], capture_output=True, text=True, timeout=5).stdout.split()
     except (FileNotFoundError, subprocess.SubprocessError):
@@ -428,6 +460,8 @@ def signal_procs(name, sig):
 
 
 def conky_procs():
+    if IS_WINDOWS:
+        return []
     try:
         out = subprocess.run(["pgrep", "-a", "conky"], capture_output=True, text=True, timeout=5).stdout
     except (FileNotFoundError, subprocess.SubprocessError):
@@ -878,12 +912,12 @@ print(main(sys.argv[1:]))
 
 def ensure_helper():
     try:
-        if HELPER_PATH.exists() and HELPER_PATH.read_text() == HELPER_SRC:
+        if HELPER_PATH.exists() and HELPER_PATH.read_text(encoding="utf-8") == HELPER_SRC:
             return
     except OSError:
         pass
     HELPER_PATH.parent.mkdir(parents=True, exist_ok=True)
-    HELPER_PATH.write_text(HELPER_SRC)
+    HELPER_PATH.write_text(HELPER_SRC, encoding="utf-8")
     HELPER_PATH.chmod(0o755)
 
 
@@ -891,7 +925,7 @@ def write_widget(w, p):
     ensure_helper()
     WIDGETS_DIR.mkdir(parents=True, exist_ok=True)
     path = widget_path(w)
-    path.write_text(conky_config(w, p))
+    path.write_text(conky_config(w, p), encoding="utf-8")
     return path
 
 
@@ -995,7 +1029,7 @@ def preview_rows(b, w, p):
 VIS_DIR = CFG_DIR / "visualizers"
 PANELS_DIR = CFG_DIR / "panels"
 LIVE_PALETTE_FILE = CFG_DIR / "live-palette.json"
-ART_CACHE = HOME / ".cache" / "themeforge" / "art"
+ART_CACHE = CACHE_DIR / "art"
 GLOW_MARGIN = 18
 
 
@@ -1003,13 +1037,13 @@ def write_live_palette(p):
     """The palette running visualizers and panels draw with (changes on Apply and in album-art mode)."""
     CFG_DIR.mkdir(parents=True, exist_ok=True)
     tmp = LIVE_PALETTE_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(p))
+    tmp.write_text(json.dumps(p), encoding="utf-8")
     tmp.replace(LIVE_PALETTE_FILE)
 
 
 def read_live_palette(fallback):
     try:
-        p = json.loads(LIVE_PALETTE_FILE.read_text())
+        p = json.loads(LIVE_PALETTE_FILE.read_text(encoding="utf-8"))
         return p if valid_palette(p) else fallback
     except Exception:
         return fallback
@@ -1024,23 +1058,49 @@ def _mtime(path):
 
 # ── background processes (one per visualizer / panel, plus the tray service) ──
 
-def tf_pids(flag, item_id=None):
-    """PIDs of ThemeForge processes started with `flag` (and item_id), read from each process's real
-    argument list so shells or editors that merely mention the command don't count."""
+def _process_argvs():
+    """(pid, argv) for processes that might be ThemeForge."""
+    if IS_WINDOWS:
+        try:
+            import psutil
+        except ImportError:
+            return []
+        out = []
+        for pr in psutil.process_iter(["pid", "cmdline"]):
+            try:
+                argv = pr.info["cmdline"] or []
+            except Exception:
+                continue
+            if any("themeforge" in a.lower() for a in argv[:2]):
+                out.append((pr.info["pid"], argv))
+        return out
     try:
         out = subprocess.run(["pgrep", "-f", "themeforge"], capture_output=True, text=True, timeout=5).stdout
     except (FileNotFoundError, subprocess.SubprocessError):
         return []
-    pids = []
+    res = []
     for tok in out.split():
         try:
             pid = int(tok)
-            argv = Path(f"/proc/{pid}/cmdline").read_bytes().decode(errors="ignore").split("\0")
+            res.append((pid, Path(f"/proc/{pid}/cmdline").read_bytes().decode(errors="ignore").split("\0")))
         except (ValueError, OSError):
             continue
+    return res
+
+
+def _is_themeforge(arg):
+    a = arg.lower().replace("\\", "/")
+    return a.endswith("themeforge.py") or a.endswith("/themeforge") or a.endswith("themeforge.exe")
+
+
+def tf_pids(flag, item_id=None):
+    """PIDs of ThemeForge processes started with `flag` (and item_id), read from each process's real
+    argument list so shells or editors that merely mention the command don't count."""
+    pids = []
+    for pid, argv in _process_argvs():
         if pid == os.getpid() or flag not in argv:
             continue
-        if not any(a.endswith("themeforge.py") or a.endswith("/themeforge") for a in argv[:argv.index(flag)]):
+        if not any(_is_themeforge(a) for a in argv[:argv.index(flag)]):
             continue
         i = argv.index(flag)
         if item_id is None or (i + 1 < len(argv) and argv[i + 1] == item_id):
@@ -1052,20 +1112,20 @@ def start_tf_process(flag, item_id=None, x11=False, log_dir=None):
     log_dir = log_dir or CFG_DIR
     log_dir.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
-    if x11:
+    if x11 and not IS_WINDOWS:
         env["QT_QPA_PLATFORM"] = "xcb"      # XWayland lets the window place itself
     if flag in ("--panel", "--visualizer"):
         ensure_kwin_rule()
-    args = [sys.executable, str(SCRIPT), flag] + ([item_id] if item_id else [])
-    with open(log_dir / f"{item_id or flag.strip('-')}.log", "w") as log:
-        subprocess.Popen(args, env=env, stdout=log, stderr=log, start_new_session=True)
+    args = self_command(flag, *([item_id] if item_id else []))
+    with open(log_dir / f"{item_id or flag.strip('-')}.log", "w", encoding="utf-8") as log:
+        subprocess.Popen(args, env=env, stdout=log, stderr=log, stdin=subprocess.DEVNULL, **QUIET)
 
 
 def stop_tf_process(flag, item_id=None):
     for pid in tf_pids(flag, item_id):
         try:
             os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
+        except OSError:                    # already gone (Windows raises a plain OSError)
             pass
 
 
@@ -1074,7 +1134,7 @@ def vis_pids(vid=None):
 
 
 def start_visualizer(v):
-    if not shutil.which("cava"):
+    if not audio_available():
         return False
     start_tf_process("--visualizer", v["id"], v.get("x11", True), VIS_DIR)
     return True
@@ -1086,6 +1146,22 @@ def stop_visualizer(vid):
 
 def panel_pids(pid=None):
     return tf_pids("--panel", pid)
+
+
+X11_ROW = [] if IS_WINDOWS else [("x11", "bool", "Pin to exact position (runs through XWayland)", None)]
+
+
+def missing_dep(what, who="ThemeForge"):
+    """(title, text) for a message box about a missing helper."""
+    if IS_WINDOWS:
+        pkgs = "PyAudioWPatch and numpy" if what == "audio" else "the winrt packages"
+        return (f"{pkgs} needed", f"{'Visualizers' if what == 'audio' else who} need {pkgs}. The installer "
+                "includes them; when running from source, install them with:\n"
+                "    pip install -r requirements-windows.txt")
+    if what == "audio":
+        return "cava needed", "Visualizers get their audio data from cava.\n\nInstall it with:\n    sudo dnf install cava"
+    return ("playerctl needed", f"{who} reads your music player through playerctl.\n\n"
+            "Install it with:\n    sudo dnf install playerctl")
 
 
 def start_panel(panel):
@@ -1190,7 +1266,7 @@ def normalize_panel(panel):
 def parse_desktop_file(path):
     entry, main = {}, False
     try:
-        text = Path(path).read_text(errors="replace")
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return entry
     for line in text.splitlines():
@@ -1203,13 +1279,45 @@ def parse_desktop_file(path):
     return entry
 
 
+def parse_url_file(path):
+    """Windows Internet Shortcut (.url, what Steam and Epic put on the desktop) → its [InternetShortcut] keys."""
+    entry, main = {}, False
+    try:
+        text = read_text_any(path)
+    except OSError:
+        return entry
+    for line in text.splitlines():
+        st = line.strip()
+        if st.startswith("["):
+            main = st.lower() == "[internetshortcut]"
+        elif main and "=" in st:
+            k, v = st.split("=", 1)
+            entry.setdefault(k.strip(), v.strip())
+    return entry
+
+
+WIN_RUNNABLE = (".exe", ".bat", ".cmd", ".com")
+
+
 def launcher_items(folder):
     d = Path(os.path.expanduser(folder or ""))
     if not folder or not d.is_dir():
         return []
     items = []
     for f in sorted(d.iterdir(), key=lambda x: x.name.lower()):
-        if f.name.startswith("."):
+        if f.name.startswith(".") or f.name.lower() == "desktop.ini":
+            continue
+        if IS_WINDOWS and f.is_file():
+            ext = f.suffix.lower()
+            if ext == ".url":
+                e = parse_url_file(f)
+                items.append({"name": f.stem, "icon": e.get("IconFile", ""), "path": str(f), "type": "shortcut"})
+            elif ext == ".lnk":
+                items.append({"name": f.stem, "icon": "", "path": str(f), "type": "shortcut"})
+            elif ext in WIN_RUNNABLE:
+                items.append({"name": f.stem, "icon": "", "path": str(f), "type": "exe"})
+            else:
+                items.append({"name": f.name, "icon": "", "path": str(f), "type": "file"})
             continue
         if f.suffix == ".desktop":
             e = parse_desktop_file(f)
@@ -1250,6 +1358,13 @@ def desktop_exec_command(entry):
 
 def launch_item(item):
     path = item["path"]
+    if IS_WINDOWS:
+        if item["type"] == "exe":
+            flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            subprocess.Popen([path], cwd=str(Path(path).parent), creationflags=flags, close_fds=True)
+        else:
+            os.startfile(path)              # .lnk, .url (steam://…), folders and documents
+        return True
     quiet = dict(stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     if item["type"] == "desktop":
         for tool in (["kioclient", "exec"], ["gio", "launch"]):
@@ -1312,7 +1427,7 @@ def notes_lines(panel):
         lines = hit[1]
     else:
         try:
-            lines = parse_notes(path.read_text(errors="replace"))
+            lines = parse_notes(path.read_text(encoding="utf-8", errors="replace"))
         except OSError:
             lines = [("text", "No notes file yet - right-click → Edit notes", -1)]
         _notes_cache[str(path)] = (m, lines)
@@ -1322,7 +1437,7 @@ def notes_lines(panel):
 def toggle_note(panel, line_index):
     """Tick or untick the to-do on that line of the notes file."""
     path = notes_path(panel)
-    lines = path.read_text(errors="replace").split("\n")
+    lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
     if not 0 <= line_index < len(lines):
         return False
     ln = lines[line_index]
@@ -1331,7 +1446,7 @@ def toggle_note(panel, line_index):
         return False
     lines[line_index] = new
     tmp = path.with_name(f".{path.name}.tf-tmp")
-    tmp.write_text("\n".join(lines))
+    tmp.write_text("\n".join(lines), encoding="utf-8")
     tmp.replace(path)
     return True
 
@@ -1340,7 +1455,7 @@ def ensure_notes_file(panel):
     path = notes_path(panel)
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(SAMPLE_NOTES)
+        path.write_text(SAMPLE_NOTES, encoding="utf-8")
     return path
 
 
@@ -1348,12 +1463,42 @@ REAL_FS = {"ext2", "ext3", "ext4", "btrfs", "xfs", "f2fs", "zfs", "bcachefs", "n
            "vfat", "exfat", "jfs", "reiserfs"}
 
 
+def win_volume_label(root):
+    import ctypes
+    buf = ctypes.create_unicode_buffer(261)
+    ok = ctypes.windll.kernel32.GetVolumeInformationW(ctypes.c_wchar_p(root), buf, 261, None, None, None, None, 0)
+    return buf.value if ok else ""
+
+
+def _win_drives(wanted):
+    import psutil
+    want = {w.rstrip("\\/").upper() for w in wanted}
+    system = os.environ.get("SystemDrive", "C:").upper()
+    out = []
+    for part in psutil.disk_partitions(all=False):
+        mnt = part.mountpoint
+        if "cdrom" in part.opts or not part.fstype:
+            continue
+        if want and mnt.rstrip("\\/").upper() not in want:
+            continue
+        try:
+            du = shutil.disk_usage(mnt)
+        except OSError:
+            continue
+        letter = mnt.rstrip("\\/")
+        name = win_volume_label(mnt) or ("System" if letter.upper() == system else "Local Disk")
+        out.append({"mount": mnt, "label": f"{name} ({letter})", "used": du.used, "total": du.total})
+    return out[:8]
+
+
 def drives_info(mounts=""):
     """[{mount, label, used, total}] for real filesystems (or the mount points listed, comma separated)."""
     wanted = [m.strip() for m in (mounts or "").split(",") if m.strip()]
+    if IS_WINDOWS:
+        return _win_drives(wanted)
     seen, out = set(), []
     try:
-        rows = [ln.split() for ln in Path("/proc/mounts").read_text().splitlines()]
+        rows = [ln.split() for ln in Path("/proc/mounts").read_text(encoding="utf-8").splitlines()]
     except OSError:
         rows = []
     rows = [(r[0], r[1].replace("\\040", " "), r[2]) for r in rows if len(r) >= 3]
@@ -2757,9 +2902,9 @@ def fetch_art(url):
     if not url:
         return None
     if url.startswith("file://"):
-        path = Path(unquote(urlparse(url).path))
+        path = Path(QUrl(url).toLocalFile() or unquote(urlparse(url).path))     # Qt handles file:///C:/…
         return path if path.is_file() else None
-    if url.startswith("/"):
+    if os.path.isabs(url):
         return Path(url) if Path(url).is_file() else None
     if not url.startswith(("http://", "https://")):
         return None
@@ -2774,6 +2919,214 @@ def fetch_art(url):
         for stale in old[:-150]:
             stale.unlink(missing_ok=True)
     return f
+
+
+PLAYERS_HINT = ("Works with any player that shows up in the Windows volume and media controls - Spotify, "
+                "browsers, the Media Player app, foobar2000…" if IS_WINDOWS else
+                "Works with any player that shows up in playerctl - Spotify, browsers, mpv, Strawberry, Elisa…")
+
+
+def media_available():
+    """Can ThemeForge see what's playing? (playerctl on Linux, Windows' media controls on Windows)"""
+    if IS_WINDOWS:
+        try:
+            import winrt.windows.media.control  # noqa: F401
+            return True
+        except Exception:
+            return False
+    return bool(shutil.which("playerctl"))
+
+
+def _seconds(v):
+    """A WinRT TimeSpan (timedelta in pywinrt, or 100 ns ticks) → seconds."""
+    if v is None:
+        return None
+    if hasattr(v, "total_seconds"):
+        return v.total_seconds()
+    return int(v) / 10_000_000
+
+
+SMTC_STATUS = {4: "Playing", 5: "Paused"}
+
+
+def smtc_snapshot(session, props, art_url, now=None):
+    """What a Windows media session reports → the same dict parse_np makes from playerctl."""
+    info = session.get_playback_info()
+    status = SMTC_STATUS.get(int(info.playback_status), "Stopped")
+    tl = session.get_timeline_properties()
+    start, end = _seconds(tl.start_time) or 0.0, _seconds(tl.end_time)
+    pos = _seconds(tl.position)
+    length = (end - start) if end and end > start else None
+    if pos is not None:
+        pos -= start
+        upd = getattr(tl, "last_updated_time", None)
+        if status == "Playing" and upd is not None and hasattr(upd, "tzinfo"):
+            import datetime
+            now = now or datetime.datetime.now(datetime.timezone.utc)
+            if upd.tzinfo is None:
+                upd = upd.replace(tzinfo=datetime.timezone.utc)
+            pos += max(0.0, (now - upd).total_seconds())     # Windows only updates the timeline now and then
+        if length:
+            pos = min(pos, length)
+    player = (session.source_app_user_model_id or "").rsplit("!", 1)[-1]
+    if player.lower().endswith(".exe"):
+        player = player[:-4]
+    return {"status": status, "title": props.title or "", "artist": props.artist or props.album_artist or "",
+            "art": art_url or "", "length": length, "position": pos, "player": player}
+
+
+async def _smtc_read_thumbnail(ref):
+    from winrt.windows.storage.streams import Buffer, DataReader, InputStreamOptions
+    stream = await ref.open_read_async()
+    size = int(stream.size)
+    if not size or size > 16 * 1024 * 1024:
+        return None
+    buf = Buffer(size)
+    buf = await stream.read_async(buf, size, InputStreamOptions.READ_AHEAD) or buf
+    try:
+        return bytes(memoryview(buf))[:buf.length]
+    except TypeError:
+        reader = DataReader.from_buffer(buf)
+        data = bytearray(buf.length)
+        reader.read_bytes(data)
+        return bytes(data)
+
+
+class _SmtcWorker:
+    """Talks to Windows' media controls (what the volume flyout shows) on its own thread with its own asyncio loop."""
+
+    def __init__(self, emit, interval):
+        import queue
+        self.emit, self.interval = emit, interval
+        self.q = queue.Queue()
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+
+    def _run(self):
+        import asyncio
+        import queue
+        loop = asyncio.new_event_loop()
+        mgr = None
+        while not self.stopped.is_set():
+            try:
+                if mgr is None:
+                    from winrt.windows.media.control import \
+                        GlobalSystemMediaTransportControlsSessionManager as Manager
+                    mgr = loop.run_until_complete(Manager.request_async())
+                try:
+                    cmd = self.q.get(timeout=self.interval)
+                except queue.Empty:
+                    cmd = None
+                if self.stopped.is_set():
+                    break
+                sess = mgr.get_current_session()
+                if cmd and sess is not None:
+                    loop.run_until_complete(self._command(sess, *cmd))
+                    loop.run_until_complete(asyncio.sleep(0.25))
+                self.emit(loop.run_until_complete(self._poll(sess)) if sess is not None else None)
+            except Exception as e:
+                print(f"media controls: {e}", file=sys.stderr)
+                mgr = None
+                self.stopped.wait(3)
+        loop.close()
+
+    @staticmethod
+    async def _command(sess, kind, arg):
+        if kind == "play":
+            await sess.try_toggle_play_pause_async()
+        elif kind == "next":
+            await sess.try_skip_next_async()
+        elif kind == "prev":
+            await sess.try_skip_previous_async()
+        elif kind == "seek":
+            await sess.try_change_playback_position_async(int(arg * 10_000_000))
+
+    async def _poll(self, sess):
+        props = await sess.try_get_media_properties_async()
+        url = ""
+        if props.thumbnail is not None:
+            key = f"{sess.source_app_user_model_id}|{props.title}|{props.artist}|{props.album_title}"
+            f = ART_CACHE / ("smtc-" + hashlib.sha1(key.encode()).hexdigest())
+            if not f.exists():
+                try:
+                    data = await _smtc_read_thumbnail(props.thumbnail)
+                except Exception:
+                    data = None
+                if data:
+                    ART_CACHE.mkdir(parents=True, exist_ok=True)
+                    tmp = f.with_suffix(".part")
+                    tmp.write_bytes(data)
+                    tmp.replace(f)
+            if f.exists():
+                url = f.as_uri()
+        return smtc_snapshot(sess, props, url)
+
+    def command(self, kind, arg=None):
+        self.q.put((kind, arg))
+
+    def stop(self):
+        self.stopped.set()
+        self.q.put(None)
+
+
+class MediaSource(QObject):
+    """What's playing, polled every `interval` seconds. `updated` carries parse_np's dict, or None.
+    Linux asks playerctl (any MPRIS player); Windows asks the system media controls (Spotify, browsers,
+    the Media Player app, anything that shows in the volume flyout)."""
+    updated = Signal(object)
+
+    def __init__(self, interval=1.0, parent=None):
+        super().__init__(parent)
+        self.interval = interval
+        self.worker = None
+        self.proc = None
+        self.timer = QTimer(self)
+        self.timer.setInterval(int(interval * 1000))
+        self.timer.timeout.connect(self.poll)
+
+    def start(self):
+        if IS_WINDOWS:
+            if self.worker is None and media_available():
+                self.worker = _SmtcWorker(self.updated.emit, self.interval)
+            return
+        if self.proc is None:
+            self.proc = QProcess(self)
+            self.proc.finished.connect(self._on_done)
+        self.timer.start()
+        self.poll()
+
+    def stop(self):
+        self.timer.stop()
+        if self.worker:
+            self.worker.stop()
+            self.worker = None
+
+    def running(self):
+        return self.worker is not None or self.timer.isActive()
+
+    def poll(self):
+        if IS_WINDOWS:
+            if self.worker:
+                self.worker.q.put(None)          # wake it for an immediate poll
+            return
+        if self.proc and self.proc.state() == QProcess.NotRunning and shutil.which("playerctl"):
+            self.proc.start("playerctl", ["metadata", "--format", NP_FORMAT])
+
+    def _on_done(self, *_):
+        self.updated.emit(parse_np(bytes(self.proc.readAllStandardOutput()).decode(errors="ignore")))
+
+    def command(self, kind, arg=None):
+        """kind: play (toggle), next, prev, or seek (arg = seconds from the start)."""
+        if IS_WINDOWS:
+            if self.worker:
+                self.worker.command(kind, arg)
+            return
+        if kind == "seek":
+            QProcess.startDetached("playerctl", ["position", f"{arg:.1f}"])
+        else:
+            QProcess.startDetached("playerctl", [{"prev": "previous", "play": "play-pause", "next": "next"}[kind]])
+        QTimer.singleShot(250, self.poll)
 
 
 # ── system stats and weather for panels ────────────────────────────
@@ -2792,12 +3145,19 @@ CPU_SENSORS = ("k10temp", "coretemp", "zenpower", "cpu_thermal", "acpitz")
 
 
 def _cpu_times():
+    if IS_WINDOWS:
+        import psutil
+        t = psutil.cpu_times()
+        return t.idle, sum(t)
     with open("/proc/stat") as f:
         v = [int(x) for x in f.readline().split()[1:]]
     return v[3] + (v[4] if len(v) > 4 else 0), sum(v)
 
 
 def _core_times():
+    if IS_WINDOWS:
+        import psutil
+        return [(t.idle, sum(t)) for t in psutil.cpu_times(percpu=True)]
     out = []
     with open("/proc/stat") as f:
         for line in f:
@@ -2809,6 +3169,13 @@ def _core_times():
 
 def _net_bytes():
     rx = tx = 0
+    if IS_WINDOWS:
+        import psutil
+        for name, c in psutil.net_io_counters(pernic=True).items():
+            if "loopback" not in name.lower():
+                rx += c.bytes_recv
+                tx += c.bytes_sent
+        return rx, tx
     with open("/proc/net/dev") as f:
         for line in f.readlines()[2:]:
             name, data = line.split(":", 1)
@@ -2820,17 +3187,54 @@ def _net_bytes():
     return rx, tx
 
 
+_win_gpu_cache = [0.0, None]
+
+
+def parse_typeperf(out):
+    """Sum of the values in typeperf's CSV sample row (None if there isn't one)."""
+    import csv
+    import io
+    for row in csv.reader(io.StringIO(out)):
+        if len(row) > 1 and not row[0].startswith("(PDH") and re.match(r"\d", row[0] or ""):
+            vals = []
+            for x in row[1:]:
+                try:
+                    vals.append(float(x))
+                except ValueError:
+                    pass
+            return sum(vals) if vals else None
+    return None
+
+
+def _win_gpu_usage():
+    """GPU 3D usage from Windows performance counters (works for AMD, Intel and NVIDIA); cached ~4 s."""
+    if time.monotonic() - _win_gpu_cache[0] < 4:
+        return _win_gpu_cache[1]
+    try:
+        out = subprocess.run(["typeperf", r"\GPU Engine(*engtype_3D)\Utilization Percentage", "-sc", "1"],
+                             capture_output=True, text=True, timeout=10, **NOWINDOW).stdout
+        total = parse_typeperf(out)
+        val = None if total is None else int(min(100, round(total)))
+    except Exception:
+        val = None
+    _win_gpu_cache[:] = [time.monotonic(), val]
+    return val
+
+
 def _gpu_reading():
-    """(usage %, temp °C) - one nvidia-smi call on NVIDIA, sysfs on AMD; None where unknown."""
+    """(usage %, temp °C) - one nvidia-smi call on NVIDIA, sysfs (Linux) or performance counters (Windows)
+    otherwise; None where unknown."""
     if shutil.which("nvidia-smi"):
         try:
             out = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,temperature.gpu",
                                   "--format=csv,noheader,nounits"], capture_output=True, text=True,
-                                 timeout=3).stdout.strip().splitlines()
+                                 timeout=3, **NOWINDOW).stdout.strip().splitlines()
             u, tmp = (x.strip() for x in out[0].split(","))
             return int(float(u)), float(tmp)
         except Exception:
             pass
+    if IS_WINDOWS:
+        return _win_gpu_usage(), None
     h = helper_funcs()
     return h["gpu_usage"](), h["gpu_temp"]()
 
@@ -2863,19 +3267,24 @@ def collect_stats(prev=None, units="c"):
     else:
         cpu, down, up = 0.0, 0.0, 0.0
     out["cpu"] = (cpu, f"{round(cpu * 100)}%")
-    mem = {}
-    with open("/proc/meminfo") as f:
-        for line in f:
-            k, v = line.split(":", 1)
-            mem[k] = int(v.split()[0])
+    if IS_WINDOWS:
+        import psutil
+        vm = psutil.virtual_memory()
+        mem = {"MemTotal": vm.total // 1024, "MemAvailable": vm.available // 1024}
+    else:
+        mem = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                k, v = line.split(":", 1)
+                mem[k] = int(v.split()[0])
     used = mem.get("MemTotal", 1) - mem.get("MemAvailable", 0)
     out["ram"] = (clamp(used / max(1, mem.get("MemTotal", 1))), f"{used / 1048576:.1f}G")
     try:
-        du = shutil.disk_usage("/")
+        du = shutil.disk_usage((os.environ.get("SystemDrive", "C:") + "\\") if IS_WINDOWS else "/")
         out["disk"] = (du.used / du.total, f"{round(du.used / du.total * 100)}%")
     except OSError:
         out["disk"] = (0.0, "n/a")
-    ct = h["hwmon_temp"](CPU_SENSORS)
+    ct = None if IS_WINDOWS else h["hwmon_temp"](CPU_SENSORS)    # Windows has no CPU temperature API
     out["cputemp"] = (clamp(ct / 100) if ct else 0.0, h["fmt_temp"](ct, units))
     gu, gt = _gpu_reading()
     out["gpu"] = (clamp(gu / 100) if gu is not None else 0.0, "n/a" if gu is None else f"{gu}%")
@@ -2953,9 +3362,9 @@ def weather_url(location, fmt=True):
 def fetch_weather(location, units):
     w = parse_weather(json.loads(_http_get(weather_url(location), timeout=15)), units)
     try:
-        cache = json.loads(WEATHER_CACHE.read_text()) if WEATHER_CACHE.exists() else {}
+        cache = json.loads(WEATHER_CACHE.read_text(encoding="utf-8")) if WEATHER_CACHE.exists() else {}
         cache[f"{location}|{units}"] = w
-        WEATHER_CACHE.write_text(json.dumps(cache))
+        WEATHER_CACHE.write_text(json.dumps(cache), encoding="utf-8")
     except Exception:
         pass
     return w
@@ -2963,7 +3372,7 @@ def fetch_weather(location, units):
 
 def cached_weather(location, units):
     try:
-        return json.loads(WEATHER_CACHE.read_text()).get(f"{location}|{units}")
+        return json.loads(WEATHER_CACHE.read_text(encoding="utf-8")).get(f"{location}|{units}")
     except Exception:
         return None
 
@@ -3009,7 +3418,7 @@ class AudioFeed(QObject):
         self.conf = conf
         VIS_DIR.mkdir(parents=True, exist_ok=True)
         self.cfg.write_text(cava_raw_config({"bars": bars, "framerate": framerate, "smoothing": smoothing,
-                                             "stereo": stereo}))
+                                             "stereo": stereo}), encoding="utf-8")
         self.stop()
         self._start()
 
@@ -3033,6 +3442,152 @@ class AudioFeed(QObject):
             self.proc.kill()
             self.proc.waitForFinished(1000)
             self.proc.blockSignals(False)
+
+
+class Spectrum:
+    """Turns audio samples into 0..1 bar heights the way cava does: log-spaced bands, auto sensitivity,
+    falling smoothing, and in stereo the left channel mirrored so the bass sits in the middle."""
+
+    def __init__(self, bars, rate, stereo=False, smoothing=77, n_fft=None):
+        import numpy as np
+        self.np = np
+        self.stereo = stereo
+        self.per = max(2, bars // 2 if stereo else bars)
+        self.n_fft = n_fft or (4096 if rate > 60000 else 2048)
+        self.window = np.hanning(self.n_fft).astype(np.float32)
+        freqs = np.fft.rfftfreq(self.n_fft, 1.0 / rate)
+        hi = min(16000.0, rate / 2 * 0.95)
+        edges = np.geomspace(50.0, hi, self.per + 1)
+        idx = np.searchsorted(freqs, edges)
+        for i in range(1, len(idx)):                         # every band gets at least one FFT bin
+            idx[i] = max(idx[i], idx[i - 1] + 1)
+        self.idx = np.minimum(idx, len(freqs) - 1)
+        centers = np.sqrt(edges[:-1] * edges[1:])
+        self.eq = (centers / 50.0) ** 0.5                    # treble is quieter; lift it like cava's EQ
+        self.decay = 0.55 + 0.4 * min(1.0, max(0.0, smoothing / 100))
+        self.gain = 1.0
+        self.prev = np.zeros(self.per * (2 if stereo else 1))
+
+    def bands(self, mono):
+        np = self.np
+        mag = np.abs(np.fft.rfft(mono * self.window)) / self.n_fft
+        cum = np.concatenate(([0.0], np.cumsum(mag)))
+        a, b = self.idx[:-1], self.idx[1:]
+        return (cum[b] - cum[a]) / (b - a) * self.eq
+
+    def process(self, samples):
+        """samples: array (n_fft, channels) of floats → list of bar heights."""
+        np = self.np
+        x = np.asarray(samples, dtype=np.float32)
+        if x.ndim == 1:
+            x = x[:, None]
+        if self.stereo:
+            left, right = x[:, 0], x[:, -1]
+            raw = np.concatenate((self.bands(left)[::-1], self.bands(right)))
+        else:
+            raw = self.bands(x.mean(axis=1))
+        loud = raw.max() > 1e-6
+        val = raw * self.gain * 40.0
+        if val.max() > 1.0:
+            self.gain *= 0.97                                 # too loud → back off quickly
+        elif loud:
+            self.gain = min(self.gain * 1.004, 400.0)         # quiet music → slowly turn up
+        val = np.minimum(val, 1.0)
+        out = np.maximum(val, self.prev * self.decay)      # jump up with the beat, fall back smoothly
+        self.prev = out
+        return [float(v) for v in out]
+
+
+class LoopbackFeed(QObject):
+    """Windows stand-in for AudioFeed: listens to what the speakers play (WASAPI loopback) and emits
+    each frame as a list of 0..1 values. Same interface as AudioFeed."""
+    frame = Signal(list)
+
+    def __init__(self, key, parent=None):
+        super().__init__(parent)
+        self.key = key
+        self.conf = None
+        self.stop_ev = None
+        self.thread = None
+
+    def configure(self, bars, framerate=60, smoothing=77, stereo=False):
+        conf = (bars, framerate, smoothing, stereo)
+        if conf == self.conf:
+            return
+        self.conf = conf
+        self.stop()
+        self.stop_ev = threading.Event()
+        self.thread = threading.Thread(target=self._run, args=(conf, self.stop_ev), daemon=True)
+        self.thread.start()
+
+    def _run(self, conf, stop_ev):
+        while not stop_ev.is_set():
+            try:
+                self._capture(conf, stop_ev)
+            except Exception as e:
+                print(f"audio capture: {e}", file=sys.stderr)
+                stop_ev.wait(3)
+
+    def _capture(self, conf, stop_ev):
+        import numpy as np
+        import pyaudiowpatch as pyaudio
+        bars, framerate, smoothing, stereo = conf
+        pa = pyaudio.PyAudio()
+        stream = None
+        try:
+            dev = pa.get_default_wasapi_loopback()
+            rate, ch = int(dev["defaultSampleRate"]), max(1, min(2, int(dev["maxInputChannels"])))
+            spec = Spectrum(bars, rate, stereo, smoothing)
+            hop = max(64, rate // max(10, framerate))
+            stream = pa.open(format=pyaudio.paFloat32, channels=ch, rate=rate, input=True,
+                             input_device_index=dev["index"], frames_per_buffer=hop)
+            ring = np.zeros((spec.n_fft, ch), dtype=np.float32)
+            period = 1.0 / max(10, framerate)
+            nxt = last_data = time.monotonic()
+            while not stop_ev.is_set():
+                avail = stream.get_read_available()
+                if avail > 0:
+                    data = np.frombuffer(stream.read(avail, exception_on_overflow=False), dtype=np.float32)
+                    new = data[: len(data) // ch * ch].reshape(-1, ch)[-spec.n_fft:]
+                    last_data = time.monotonic()
+                elif time.monotonic() - last_data > 2 * period:
+                    new = np.zeros((hop, ch), dtype=np.float32)   # Windows sends nothing during silence
+                else:
+                    new = None
+                if new is not None and len(new):
+                    ring = np.concatenate((ring[len(new):], new))
+                self.frame.emit(spec.process(ring))
+                now = time.monotonic()
+                if now - last_data > 20:
+                    return      # long silence: reopen, which also picks up newly chosen speakers/headphones
+                nxt = max(nxt + period, now)
+                stop_ev.wait(max(0.0, nxt - time.monotonic()))
+        finally:
+            if stream is not None:
+                stream.close()
+            pa.terminate()
+
+    def stop(self):
+        if self.stop_ev:
+            self.stop_ev.set()
+        if self.thread:
+            self.thread.join(1.5)
+        self.thread = self.stop_ev = None
+
+
+def make_audio_feed(key, parent=None):
+    return LoopbackFeed(key, parent) if IS_WINDOWS else AudioFeed(key, parent)
+
+
+def audio_available():
+    if IS_WINDOWS:
+        try:
+            import numpy  # noqa: F401
+            import pyaudiowpatch  # noqa: F401
+            return True
+        except Exception:
+            return False
+    return bool(shutil.which("cava"))
 
 
 # ── visualizers ────────────────────────────────────────────────────
@@ -3477,6 +4032,24 @@ def paint_visualizer(qp, rect, vals, v, p, peaks=None, t=0.0, sim=None):
     qp.restore()
 
 
+def win_pin_to_desktop(hwnd):
+    """Make the desktop (Progman) own this window, so "Show desktop" (Win+D) leaves it on screen the way
+    Rainmeter skins stay, instead of hiding it with every other window."""
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        progman = user32.FindWindowW("Progman", None)
+        if not progman:
+            return False
+        setter = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
+        setter.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
+        setter(ctypes.c_void_p(hwnd), -8, ctypes.c_void_p(progman))        # GWLP_HWNDPARENT = owner
+        return True
+    except Exception as e:
+        print(f"couldn't pin to the desktop: {e}", file=sys.stderr)
+        return False
+
+
 class DesktopWindow(QWidget):
     """Base for ThemeForge's own desktop windows: frameless, kept below other windows, reloads itself when
     the settings or the live palette change, fades in, and blends smoothly into new colors."""
@@ -3505,6 +4078,11 @@ class DesktopWindow(QWidget):
         self.anim.setInterval(self.FRAME_MS)
         self.anim.timeout.connect(self.on_anim)
         self.last_frame = time.monotonic()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if IS_WINDOWS and not getattr(self, "_pinned", False):
+            self._pinned = win_pin_to_desktop(int(self.winId()))
 
     def check_reload(self):
         stamp = (_mtime(SETTINGS_FILE), _mtime(LIVE_PALETTE_FILE))
@@ -3574,7 +4152,7 @@ class VisualizerWindow(DesktopWindow):
         self.sim = ParticleSim()
         self.last_audio = time.monotonic()
         self.v = None
-        self.feed = AudioFeed(vid, self)
+        self.feed = make_audio_feed(vid, self)
         self.feed.frame.connect(self.on_frame)
         if not self.check_reload():
             raise SystemExit(f"No visualizer with id {vid}")
@@ -3667,13 +4245,10 @@ class PanelWindow(DesktopWindow):
         self.data_timer.timeout.connect(self.sample_data)
         self.watcher = QFileSystemWatcher(self)
         self.watcher.directoryChanged.connect(lambda *_: self.load_items())
-        self.feed = AudioFeed(f"panel-{pid}", self)
+        self.feed = make_audio_feed(f"panel-{pid}", self)
         self.feed.frame.connect(self.on_frame)
-        self.np_proc = QProcess(self)
-        self.np_proc.finished.connect(self.on_np)
-        self.np_timer = QTimer(self)
-        self.np_timer.setInterval(1000)
-        self.np_timer.timeout.connect(self.poll_np)
+        self.media = MediaSource(1.0, self)
+        self.media.updated.connect(self.on_np)
         self.slow = QTimer(self)                 # once-a-second repaint when animations are off
         self.slow.setInterval(1000)
         self.slow.timeout.connect(self.update)
@@ -3698,9 +4273,8 @@ class PanelWindow(DesktopWindow):
         kind = panel["kind"]
         if kind == "launcher" and (not old or old["folder"] != panel["folder"]):
             self.load_items()
-        if kind == "nowplaying" and not self.np_timer.isActive():
-            self.np_timer.start()
-            self.poll_np()
+        if kind == "nowplaying" and not self.media.running():
+            self.media.start()
         if kind == "system" and self.stats_thread is None:
             self.stats_thread = threading.Thread(target=self.stats_loop, daemon=True)
             self.stats_thread.start()
@@ -3890,14 +4464,9 @@ class PanelWindow(DesktopWindow):
         self.update()
 
     # ── now playing
-    def poll_np(self):
-        if self.np_proc.state() == QProcess.NotRunning and shutil.which("playerctl"):
-            self.np_proc.start("playerctl", ["metadata", "--format", NP_FORMAT])
-
-    def on_np(self, *_):
-        out = bytes(self.np_proc.readAllStandardOutput()).decode(errors="ignore")
+    def on_np(self, np):
         was_playing = bool(self.np and self.np["status"] == "Playing")
-        self.np = parse_np(out)
+        self.np = np
         self.np_at = time.monotonic()
         key = ((self.np or {}).get("title"), (self.np or {}).get("artist"))
         if key != self.title_key:
@@ -4071,11 +4640,9 @@ class PanelWindow(DesktopWindow):
             self.kick()
             launch_item(self.items[arg])
         elif kind in ("prev", "play", "next"):
-            QProcess.startDetached("playerctl", [{"prev": "previous", "play": "play-pause", "next": "next"}[kind]])
-            QTimer.singleShot(250, self.poll_np)
+            self.media.command(kind)
         elif kind == "seek" and self.np and self.np.get("length"):
-            QProcess.startDetached("playerctl", ["position", f"{arg * self.np['length']:.1f}"])
-            QTimer.singleShot(250, self.poll_np)
+            self.media.command("seek", arg * self.np["length"])
         elif kind == "forecast":
             QDesktopServices.openUrl(QUrl(weather_url(self.panel["location"], fmt=False)))
         elif kind == "month":
@@ -4110,7 +4677,7 @@ class PanelWindow(DesktopWindow):
             m.addAction("Refresh").triggered.connect(self.sample_data)
         m.addAction("Move this panel").triggered.connect(self.start_move)
         m.addAction("Edit in ThemeForge").triggered.connect(
-            lambda: subprocess.Popen([sys.executable, str(SCRIPT)], start_new_session=True))
+            lambda: subprocess.Popen(self_command(), **QUIET))
         m.addSeparator()
         m.addAction("Close this panel").triggered.connect(QApplication.quit)
         m.exec(pos)
@@ -4118,16 +4685,16 @@ class PanelWindow(DesktopWindow):
     def shutdown(self):
         self.stats_stop.set()
         self.feed.stop()
-        if self.np_proc.state() != QProcess.NotRunning:
-            self.np_proc.kill()
-            self.np_proc.waitForFinished(500)
+        self.media.stop()
 
 
 def icon_for_item(it):
     ic = QIcon()
     name = it.get("icon") or ""
-    if name.startswith("/") and Path(name).exists():
+    if os.path.isabs(name) and Path(name).exists():
         ic = QIcon(name)
+        if ic.isNull() or not ic.availableSizes():
+            ic = QFileIconProvider().icon(QFileInfo(name))       # an .exe named as the icon
     elif name:
         ic = QIcon.fromTheme(name)
     if ic.isNull() and it["type"] != "desktop":
@@ -4168,6 +4735,28 @@ def is_git_checkout():
 def is_system_install():
     """Installed by dnf/rpm (e.g. from COPR) - the package manager does the updating."""
     return str(SCRIPT).startswith(("/usr/", "/opt/"))
+
+
+def is_windows_installed():
+    """The Windows build installed by ThemeForge-Setup.exe (it leaves an uninstaller next to the exe)."""
+    return IS_WINDOWS and IS_FROZEN and any(SCRIPT.parent.glob("unins*.exe"))
+
+
+def is_portable():
+    """The Windows portable zip: a frozen build without an installer, so it can't update itself."""
+    return IS_WINDOWS and IS_FROZEN and not is_windows_installed()
+
+
+def manual_update_hint():
+    """How to update when the built-in updater can't (None when it can)."""
+    if is_system_install():
+        return "Update it with <code>sudo dnf upgrade themeforge</code>."
+    if is_portable():
+        return "Download <b>ThemeForge-Windows.zip</b> from the release page and unzip it over this copy."
+    return None
+
+
+RESUME_FILE = CFG_DIR / "resume-after-update.json"
 
 
 COMMUNITY_INDEX_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/themes/index.json"
@@ -4212,7 +4801,8 @@ def fetch_latest_release():
             "url": data.get("html_url") or f"https://github.com/{GITHUB_REPO}/releases",
             "script": assets.get("themeforge.py")
             or f"https://raw.githubusercontent.com/{GITHUB_REPO}/{tag}/themeforge.py",
-            "sha256": assets.get("themeforge.py.sha256")}
+            "sha256": assets.get("themeforge.py.sha256"),
+            "setup": assets.get("ThemeForge-Setup.exe"), "setup_sha256": assets.get("ThemeForge-Setup.exe.sha256")}
 
 
 def check_for_update():
@@ -4221,7 +4811,59 @@ def check_for_update():
     return rel if parse_version(rel["version"]) > parse_version(VERSION) else None
 
 
+def download_windows_installer(rel):
+    """Fetch and verify ThemeForge-Setup.exe for the release; returns its path."""
+    if not rel.get("setup") or not rel.get("setup_sha256"):
+        raise RuntimeError("this release has no Windows installer")
+    data = _http_get(rel["setup"], timeout=120, limit=400 * 1024 * 1024)
+    expected = _http_get(rel["setup_sha256"]).decode().split()[0].lower()
+    if hashlib.sha256(data).hexdigest() != expected:
+        raise RuntimeError("the download didn't match its published checksum, so it wasn't installed")
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    path = CACHE_DIR / f"ThemeForge-Setup-{rel['version']}.exe"
+    tmp = path.with_suffix(".part")
+    tmp.write_bytes(data)
+    tmp.replace(path)
+    return path
+
+
+def run_windows_installer(path, s):
+    """Close every ThemeForge window (the installer has to replace the .exe they run from), remember what
+    was running so the new version brings it back, and start the installer quietly. It reopens ThemeForge."""
+    running = {"visualizers": [v["id"] for v in s.get("visualizers", []) if vis_pids(v["id"])],
+               "panels": [x["id"] for x in s.get("panels", []) if panel_pids(x["id"])],
+               "service": bool(tf_pids("--service"))}
+    RESUME_FILE.write_text(json.dumps(running), encoding="utf-8")
+    for flag in ("--visualizer", "--panel", "--service"):
+        stop_tf_process(flag)
+    subprocess.Popen([str(path), "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"],
+                     close_fds=True)
+
+
+def resume_after_update():
+    """Restart what was running before the Windows installer closed it."""
+    try:
+        running = json.loads(RESUME_FILE.read_text(encoding="utf-8"))
+        RESUME_FILE.unlink()
+    except (OSError, ValueError):
+        return
+    s = load_settings()
+    for v in s.get("visualizers", []):
+        if v["id"] in running.get("visualizers", []):
+            start_visualizer(v)
+    for x in s.get("panels", []):
+        if x["id"] in running.get("panels", []):
+            start_panel(x)
+    if running.get("service"):
+        ensure_service()
+
+
 def install_update(rel):
+    if is_windows_installed():
+        rel["installer"] = str(download_windows_installer(rel))
+        return rel["version"]
+    if is_portable():
+        raise RuntimeError("this is the portable copy - download ThemeForge-Windows.zip from the release page")
     if is_git_checkout():
         raise RuntimeError("this copy is a git checkout - update it with `git pull` instead")
     if is_system_install():
@@ -4264,17 +4906,17 @@ def apply_kitty(p, s, log):
              f"inactive_tab_background {p['surface']}", f"inactive_tab_foreground {p['muted']}",
              f"tab_bar_background {p['background']}", ""]
     lines += [f"color{i} {c}" for i, c in enumerate(a)]
-    (d / "themeforge.conf").write_text("\n".join(lines) + "\n")
+    (d / "themeforge.conf").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     conf = d / "kitty.conf"
     backup(conf)
-    text = conf.read_text(errors="replace") if conf.exists() else ""
+    text = conf.read_text(encoding="utf-8", errors="replace") if conf.exists() else ""
     marker = "# ThemeForge palette (keep this last so it wins)"
     kept = [ln for ln in text.splitlines() if ln.strip() not in ("include themeforge.conf", marker)]
     while kept and not kept[-1].strip():
         kept.pop()
     kept += ["", marker, "include themeforge.conf"]
-    conf.write_text("\n".join(kept) + "\n")
+    conf.write_text("\n".join(kept) + "\n", encoding="utf-8")
     n = signal_procs("kitty", signal.SIGUSR1)
     log(f"✓ kitty - palette written, {n} open window(s) reloaded")
 
@@ -4282,7 +4924,7 @@ def apply_kitty(p, s, log):
 def apply_cava(p, s, log):
     path = HOME / ".config" / "cava" / "config"
     backup(path)
-    lines = path.read_text(errors="replace").splitlines() if path.exists() else []
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines() if path.exists() else []
     out, skip = [], False
     for line in lines:
         st = line.strip()
@@ -4302,7 +4944,7 @@ def apply_cava(p, s, log):
     else:
         sec.append("gradient = 0")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(out + sec) + "\n")
+    path.write_text("\n".join(out + sec) + "\n", encoding="utf-8")
     n = signal_procs("cava", signal.SIGUSR1)
     log(f"✓ cava - {len(g)}-color gradient written, {n} running instance(s) reloaded")
 
@@ -4378,7 +5020,7 @@ def apply_kde(p, s, log):
     name = "ThemeForgeB" if current == "ThemeForgeA" else "ThemeForgeA"
     d = HOME / ".local" / "share" / "color-schemes"
     d.mkdir(parents=True, exist_ok=True)
-    (d / f"{name}.colors").write_text(kde_colors(p, name))
+    (d / f"{name}.colors").write_text(kde_colors(p, name), encoding="utf-8")
     ok = run_cmd(["plasma-apply-colorscheme", name], log)
     log(("✓" if ok else "✗") + " KDE Plasma - color scheme " + ("applied" if ok else "written but not applied"))
     if ok and s.get("kde_accent", True):
@@ -4415,7 +5057,7 @@ def konsole_scheme(p):
 def apply_konsole(p, s, log):
     d = HOME / ".local" / "share" / "konsole"
     d.mkdir(parents=True, exist_ok=True)
-    (d / "ThemeForge.colorscheme").write_text(konsole_scheme(p))
+    (d / "ThemeForge.colorscheme").write_text(konsole_scheme(p), encoding="utf-8")
     rc = HOME / ".config" / "konsolerc"
     prof = ini_get(rc, "Desktop Entry", "DefaultProfile")
     if prof and (d / prof).exists():
@@ -4424,7 +5066,7 @@ def apply_konsole(p, s, log):
     else:
         pf = d / "ThemeForge.profile"
         if not pf.exists():
-            pf.write_text("[Appearance]\nColorScheme=ThemeForge\n\n[General]\nName=ThemeForge\nParent=FALLBACK/\n")
+            pf.write_text("[Appearance]\nColorScheme=ThemeForge\n\n[General]\nName=ThemeForge\nParent=FALLBACK/\n", encoding="utf-8")
         backup(rc)
         ini_set(rc, "Desktop Entry", "DefaultProfile", "ThemeForge.profile")
         prof = "ThemeForge.profile"
@@ -4455,7 +5097,7 @@ CONKY_KEYMAP = [("default_color", "foreground"), ("own_window_colour", "backgrou
 
 
 def recolor_conky(path, p):
-    text = path.read_text(errors="replace")
+    text = path.read_text(encoding="utf-8", errors="replace")
     total = 0
     for key, role in CONKY_KEYMAP:
         hexv = role_color(p, role).lstrip("#")
@@ -4464,7 +5106,7 @@ def recolor_conky(path, p):
         total += n
     if total:
         backup(path)
-        path.write_text(text)
+        path.write_text(text, encoding="utf-8")
     return total
 
 
@@ -4490,7 +5132,11 @@ def apply_wallpaper(p, s, log):
     if not wp or not Path(wp).exists():
         log("- Wallpaper - no image picked on the Colors tab")
         return
-    ok = run_cmd(["plasma-apply-wallpaperimage", wp], log)
+    if IS_WINDOWS:
+        import ctypes
+        ok = bool(ctypes.windll.user32.SystemParametersInfoW(20, 0, str(Path(wp).resolve()), 3))
+    else:
+        ok = run_cmd(["plasma-apply-wallpaperimage", wp], log)
     log(("✓" if ok else "✗") + f" Wallpaper - {Path(wp).name}")
 
 
@@ -4516,7 +5162,7 @@ def installed_icon_themes():
             if d.name in found or not idx.is_file():
                 continue
             try:
-                txt = idx.read_text(errors="replace")
+                txt = idx.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
             if re.search(r"^Directories\s*=\s*\S", txt, re.M) and not re.search(r"^Hidden\s*=\s*true", txt, re.M | re.I):
@@ -4648,7 +5294,11 @@ def discord_css(p):
 """
 
 
+_ROAMING = Path(os.environ.get("APPDATA") or HOME / "AppData" / "Roaming")
 DISCORD_THEME_DIRS = [  # (client, config dir); themes go in <dir>/themes
+    ("Vencord", _ROAMING / "Vencord"), ("Vesktop", _ROAMING / "vesktop"), ("Equicord", _ROAMING / "Equicord"),
+    ("Equibop", _ROAMING / "equibop"), ("BetterDiscord", _ROAMING / "BetterDiscord"),
+] if IS_WINDOWS else [
     ("Vencord", HOME / ".config" / "Vencord"),
     ("Vesktop", HOME / ".config" / "vesktop"),
     ("Vesktop (Flatpak)", HOME / ".var" / "app" / "dev.vencord.Vesktop" / "config" / "vesktop"),
@@ -4672,7 +5322,7 @@ def apply_discord(p, s, log):
         f = d / "themes" / "themeforge.theme.css"
         backup(f)
         f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(css)
+        f.write_text(css, encoding="utf-8")
     names = ", ".join(n for n, _ in clients)
     log(f"✓ Discord - theme written for {names}. Turn on “ThemeForge” once in Discord → Settings → Themes; "
         "after that it updates live.")
@@ -4706,13 +5356,13 @@ def apply_btop(p, s, log):
     theme = d / "themes" / "themeforge.theme"
     backup(theme)
     theme.parent.mkdir(parents=True, exist_ok=True)
-    theme.write_text(btop_theme(p))
+    theme.write_text(btop_theme(p), encoding="utf-8")
     conf = d / "btop.conf"
     backup(conf)
-    lines = conf.read_text(errors="replace").splitlines() if conf.exists() else []
+    lines = conf.read_text(encoding="utf-8", errors="replace").splitlines() if conf.exists() else []
     lines = [ln for ln in lines if not re.match(r"\s*color_theme\s*=", ln)]
     lines.append('color_theme = "themeforge"')
-    conf.write_text("\n".join(lines) + "\n")
+    conf.write_text("\n".join(lines) + "\n", encoding="utf-8")
     log("✓ btop - theme written and selected (open btop again to see it)")
 
 
@@ -4766,18 +5416,22 @@ def starship_toml(text, p):
 def apply_starship(p, s, log):
     path = Path(os.environ.get("STARSHIP_CONFIG") or HOME / ".config" / "starship.toml")
     backup(path)
-    text = path.read_text(errors="replace") if path.exists() else ""
+    text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(starship_toml(text, p))
+    path.write_text(starship_toml(text, p), encoding="utf-8")
     log("✓ Starship - palette set (named colors like red/blue/purple now use your theme; open a new prompt)")
 
 
 def find_spicetify():
+    la = Path(os.environ.get("LOCALAPPDATA") or HOME / "AppData" / "Local")
     for c in (shutil.which("spicetify"), str(HOME / ".spicetify" / "spicetify"),
-              str(HOME / ".local" / "bin" / "spicetify")):
-        if c and os.access(c, os.X_OK):
+              str(HOME / ".local" / "bin" / "spicetify"), str(la / "spicetify" / "spicetify.exe")):
+        if c and os.path.isfile(c) and os.access(c, os.X_OK):
             return c
     return None
+
+
+find_spicetify.label = "Spicetify"
 
 
 def spicetify_colors(p):
@@ -4797,16 +5451,16 @@ def apply_spotify(p, s, log):
         log("- Spotify - Spicetify isn't installed (see spicetify.app)")
         return
     try:
-        cfg_dir = subprocess.run([tool, "path", "userdata"], capture_output=True, text=True,
+        cfg_dir = subprocess.run([tool, "path", "userdata"], capture_output=True, text=True, **NOWINDOW,
                                  timeout=15).stdout.strip().splitlines()[-1]
         tdir = Path(cfg_dir) / "Themes" / "ThemeForge"
     except Exception:
         tdir = HOME / ".config" / "spicetify" / "Themes" / "ThemeForge"
     tdir.mkdir(parents=True, exist_ok=True)
-    (tdir / "color.ini").write_text(spicetify_colors(p))
+    (tdir / "color.ini").write_text(spicetify_colors(p), encoding="utf-8")
     css = tdir / "user.css"
     if not css.exists():
-        css.write_text("/* ThemeForge - colors come from color.ini; add your own tweaks here */\n")
+        css.write_text("/* ThemeForge - colors come from color.ini; add your own tweaks here */\n", encoding="utf-8")
     run_cmd([tool, "config", "current_theme", "ThemeForge", "color_scheme", "themeforge"], lambda *_: None)
     if s.get("spicetify_ready"):
         ok = run_cmd([tool, "refresh"], log)
@@ -4841,7 +5495,297 @@ def apply_vivaldi(p, s, log):
         "(Vivaldi can't be themed from outside, so this step is manual).")
 
 
-TARGETS = [
+# ── Windows ────────────────────────────────────────────────────────
+
+def _appdata():
+    return Path(os.environ.get("APPDATA") or HOME / "AppData" / "Roaming")
+
+
+def _localappdata():
+    return Path(os.environ.get("LOCALAPPDATA") or HOME / "AppData" / "Local")
+
+
+def read_text_any(path):
+    """Text of a file that may be UTF-16 (Rainmeter, some Windows tools) or UTF-8 with a BOM."""
+    raw = Path(path).read_bytes()
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16")
+    return raw.decode("utf-8-sig", errors="replace")
+
+
+# registry access goes through these three so tests can swap in a fake registry
+def win_reg_get(path, name):
+    """(kind, value) or None. kind is "dword", "sz" or "binary"."""
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path) as k:
+            value, typ = winreg.QueryValueEx(k, name)
+    except FileNotFoundError:
+        return None
+    kind = {winreg.REG_DWORD: "dword", winreg.REG_BINARY: "binary"}.get(typ, "sz")
+    return kind, (value.hex() if kind == "binary" else value)
+
+
+def win_reg_set(path, name, kind, value):
+    import winreg
+    typ = {"dword": winreg.REG_DWORD, "binary": winreg.REG_BINARY}.get(kind, winreg.REG_SZ)
+    if kind == "binary" and isinstance(value, str):
+        value = bytes.fromhex(value)
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, path, 0, winreg.KEY_SET_VALUE) as k:
+        winreg.SetValueEx(k, name, 0, typ, value)
+
+
+def win_reg_delete(path, name):
+    import winreg
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path, 0, winreg.KEY_SET_VALUE) as k:
+            winreg.DeleteValue(k, name)
+    except FileNotFoundError:
+        pass
+
+
+def win_broadcast_colors():
+    """Tell running apps (Explorer, title bars, UWP apps) that the colors changed."""
+    if not IS_WINDOWS:
+        return
+    import ctypes
+    from ctypes import wintypes
+    result = wintypes.DWORD()
+    for what in ("ImmersiveColorSet", "WindowsThemeElement"):
+        ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x001A, 0, what, 0x0002, 2000, ctypes.byref(result))
+
+
+WIN_PERSONALIZE = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+WIN_DWM = r"Software\Microsoft\Windows\DWM"
+WIN_ACCENT = r"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent"
+WIN_DESKTOP = r"Control Panel\Desktop"
+WIN_MODES = [("auto", "Match the palette"), ("dark", "Always dark"), ("light", "Always light")]
+
+
+def abgr(h):
+    r, g, b = hex_to_rgb(h)
+    return (0xFF << 24) | (b << 16) | (g << 8) | r
+
+
+def argb(h, alpha=0xC4):
+    r, g, b = hex_to_rgb(h)
+    return (alpha << 24) | (r << 16) | (g << 8) | b
+
+
+def accent_palette_bytes(h):
+    """Windows' AccentPalette: 8 shades (light → dark) as RGBA bytes, built around the accent."""
+    shades = [adjust(h, 0.30), adjust(h, 0.20), adjust(h, 0.10), h, adjust(h, -0.10), adjust(h, -0.20),
+              adjust(h, -0.30), mix(h, "#808080", 0.6)]
+    out = bytearray()
+    for c in shades:
+        out += bytes((*hex_to_rgb(c), 0))
+    return bytes(out)
+
+
+def win_accent_values(p, s):
+    mode = s.get("win_mode", "auto")
+    dark = {"dark": True, "light": False}.get(mode, is_dark(p["background"]))
+    ac = p["accent"]
+    return [
+        (WIN_PERSONALIZE, "AppsUseLightTheme", "dword", 0 if dark else 1),
+        (WIN_PERSONALIZE, "SystemUsesLightTheme", "dword", 0 if dark else 1),
+        (WIN_PERSONALIZE, "ColorPrevalence", "dword", 1 if s.get("win_taskbar") else 0),
+        (WIN_DWM, "AccentColor", "dword", abgr(ac)),
+        (WIN_DWM, "ColorizationColor", "dword", argb(ac)),
+        (WIN_DWM, "ColorizationAfterglow", "dword", argb(ac)),
+        (WIN_DWM, "ColorPrevalence", "dword", 1 if s.get("win_titlebars", True) else 0),
+        (WIN_ACCENT, "AccentColorMenu", "dword", abgr(ac)),
+        (WIN_ACCENT, "StartColorMenu", "dword", abgr(adjust(ac, -0.2))),
+        (WIN_ACCENT, "AccentPalette", "binary", accent_palette_bytes(ac).hex()),
+        (WIN_DESKTOP, "AutoColorization", "dword", 0),     # stop Windows picking the accent from the wallpaper
+    ]
+
+
+def apply_win_accent(p, s, log):
+    orig = s.setdefault("win_original", {})
+    for path, name, kind, value in win_accent_values(p, s):
+        key = f"{path}|{name}"
+        if key not in orig:
+            orig[key] = win_reg_get(path, name)          # None = didn't exist; deleted again on restore
+        win_reg_set(path, name, kind, value)
+    win_broadcast_colors()
+    mode = "dark" if win_accent_values(p, s)[0][3] == 0 else "light"
+    log(f"✓ Windows - accent {p['accent']}, {mode} mode"
+        + (", colored title bars" if s.get("win_titlebars", True) else "")
+        + (", colored Start and taskbar" if s.get("win_taskbar") else ""))
+
+
+def restore_win_registry(s, log):
+    orig = s.pop("win_original", None)
+    if not orig:
+        return
+    for key, val in orig.items():
+        path, name = key.split("|", 1)
+        try:
+            if val is None:
+                win_reg_delete(path, name)
+            else:
+                win_reg_set(path, name, val[0], val[1])
+        except OSError as e:
+            log(f"   ! couldn't restore {name}: {e}")
+    win_broadcast_colors()
+    log("   Windows accent color and light/dark mode back to how they were")
+
+
+def wt_settings_files():
+    la = _localappdata()
+    cands = [la / "Packages" / "Microsoft.WindowsTerminal_8wekyb3d8bbwe" / "LocalState" / "settings.json",
+             la / "Packages" / "Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe" / "LocalState" / "settings.json",
+             la / "Microsoft" / "Windows Terminal" / "settings.json"]
+    return [c for c in cands if c.exists()]
+
+
+def find_windows_terminal():
+    files = wt_settings_files()
+    return str(files[0]) if files else None
+
+
+find_windows_terminal.label = "Windows Terminal"
+
+
+_WS = re.compile(r"\s*")
+
+
+def _json_scan(text, handle):
+    """Walk JSON-ish text outside of strings; handle(text, i) returns how many chars to drop at i (0 = keep)."""
+    out, i, n, in_str = [], 0, len(text), False
+    while i < n:
+        c = text[i]
+        if in_str:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(text[i + 1])
+                i += 2
+                continue
+            in_str = c != '"'
+            i += 1
+            continue
+        drop = handle(text, i)
+        if drop:
+            i += drop
+            continue
+        in_str = c == '"'
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def strip_jsonc(text):
+    """JSON with comments and trailing commas (what Windows Terminal accepts) → plain JSON."""
+    def comments(t, i):
+        if t.startswith("//", i):
+            j = t.find("\n", i)
+            return (len(t) if j < 0 else j) - i
+        if t.startswith("/*", i):
+            j = t.find("*/", i + 2)
+            return (len(t) if j < 0 else j + 2) - i
+        return 0
+
+    def trailing_commas(t, i):
+        if t[i] != ",":
+            return 0
+        j = _WS.match(t, i + 1).end()
+        return 1 if t[j:j + 1] in ("}", "]") else 0
+    return _json_scan(_json_scan(text, comments), trailing_commas)
+
+
+WT_NAMES = ["black", "red", "green", "yellow", "blue", "purple", "cyan", "white"]
+
+
+def wt_scheme(p):
+    a = p["ansi"]
+    sch = {"name": "ThemeForge", "background": p["background"], "foreground": p["foreground"],
+           "cursorColor": p["accent"], "selectionBackground": p["accent"]}
+    for i, n in enumerate(WT_NAMES):
+        sch[n] = a[i]
+        sch["bright" + n.capitalize()] = a[i + 8]
+    return sch
+
+
+def wt_apply_settings(data, p):
+    data["schemes"] = [x for x in data.get("schemes", []) if x.get("name") != "ThemeForge"] + [wt_scheme(p)]
+    prof = data.get("profiles")
+    if isinstance(prof, list):                       # very old settings format
+        for x in prof:
+            x["colorScheme"] = "ThemeForge"
+    else:
+        prof = data.setdefault("profiles", {})
+        prof.setdefault("defaults", {})["colorScheme"] = "ThemeForge"
+        for x in prof.get("list", []):
+            if "colorScheme" in x:                   # a per-profile scheme would override the default
+                x["colorScheme"] = "ThemeForge"
+    return data
+
+
+def apply_wterminal(p, s, log):
+    files = wt_settings_files()
+    for f in files:
+        backup(f)
+        data = json.loads(strip_jsonc(read_text_any(f)))
+        tmp = f.with_name(f.name + ".tf-tmp")
+        tmp.write_text(json.dumps(wt_apply_settings(data, p), indent=4), encoding="utf-8")
+        tmp.replace(f)
+    log(f"✓ Windows Terminal - ThemeForge scheme set as the default ({len(files)} settings file"
+        f"{'s' if len(files) != 1 else ''}; open windows update right away)")
+
+
+def rainmeter_paths():
+    ini = _appdata() / "Rainmeter" / "Rainmeter.ini"
+    skins = None
+    if ini.exists():
+        try:
+            m = re.search(r"^SkinPath\s*=\s*(.+)$", read_text_any(ini), re.M)
+            skins = m.group(1).strip() if m else None
+        except OSError:
+            pass
+    skins = Path(skins) if skins else HOME / "Documents" / "Rainmeter" / "Skins"
+    exe = None
+    for base in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")):
+        if base and (Path(base) / "Rainmeter" / "Rainmeter.exe").exists():
+            exe = Path(base) / "Rainmeter" / "Rainmeter.exe"
+            break
+    return skins, exe
+
+
+def find_rainmeter():
+    skins, exe = rainmeter_paths()
+    return str(exe) if exe else (str(skins) if skins.exists() else None)
+
+
+find_rainmeter.label = "Rainmeter"
+
+
+def rainmeter_vars(p):
+    def rgb(h):
+        return ",".join(str(c) for c in hex_to_rgb(h))
+    lines = ["; Generated by ThemeForge - rewritten every time you Apply.",
+             "; In a skin: @Include=#SKINSPATH#ThemeForge\\@Resources\\Colors.inc  then  FontColor=#TFAccent#",
+             "[Variables]"]
+    for key, label in (("background", "Background"), ("surface", "Surface"), ("foreground", "Foreground"),
+                       ("muted", "Muted"), ("accent", "Accent"), ("accent2", "Accent2")):
+        lines.append(f"TF{label}={rgb(p[key])}")
+    lines += [f"TFColor{i}={rgb(c)}" for i, c in enumerate(p["ansi"])]
+    lines += [f"TFGradient{i + 1}={rgb(c)}" for i, c in enumerate(p["gradient"])]
+    return "\n".join(lines) + "\n"
+
+
+def apply_rainmeter(p, s, log):
+    skins, exe = rainmeter_paths()
+    f = skins / "ThemeForge" / "@Resources" / "Colors.inc"
+    backup(f)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(rainmeter_vars(p), encoding="utf-8")
+    if exe:
+        subprocess.Popen([str(exe), "!RefreshApp"], **QUIET)
+    log(f"✓ Rainmeter - color variables written to {f} (skins that @Include it update on refresh)")
+
+
+LINUX_TARGETS = [
     ("kitty", "kitty", "Writes themeforge.conf, includes it from kitty.conf, live-reloads open windows", "kitty", apply_kitty),
     ("cava", "cava", "Rewrites the [color] section with your gradient and live-reloads", "cava", apply_cava),
     ("kde", "KDE Plasma", "Color scheme for apps, panels and title bars (GTK apps on Breeze follow it too)",
@@ -4863,6 +5807,22 @@ TARGETS = [
      apply_starship),
     ("vivaldi", "Vivaldi", "Exports a Vivaldi theme you import once per change", None, apply_vivaldi),
 ]
+WINDOWS_TARGETS = [
+    ("winaccent", "Windows colors", "Accent color, dark or light mode and colored title bars (options on the right)",
+     None, apply_win_accent),
+    ("wterminal", "Windows Terminal", "Adds a ThemeForge color scheme and makes it the default",
+     find_windows_terminal, apply_wterminal),
+    ("visualizers", "Visualizers & panels", "Running visualizers and panels switch colors", None, apply_live),
+    ("wallpaper", "Wallpaper", "Sets the image you picked on the Colors tab", None, apply_wallpaper),
+    ("discord", "Discord", "Theme for Vencord, Vesktop, Equicord or BetterDiscord", None, apply_discord),
+    ("spotify", "Spotify", "Spicetify color scheme", find_spicetify, apply_spotify),
+    ("starship", "Starship prompt", "Palette for starship.toml - named colors follow your theme", "starship",
+     apply_starship),
+    ("rainmeter", "Rainmeter", "Color variables your Rainmeter skins can @Include", find_rainmeter,
+     apply_rainmeter),
+    ("vivaldi", "Vivaldi", "Exports a Vivaldi theme you import once per change", None, apply_vivaldi),
+]
+TARGETS = WINDOWS_TARGETS if IS_WINDOWS else LINUX_TARGETS
 
 
 def target_available(exe):
@@ -4870,7 +5830,7 @@ def target_available(exe):
     if exe is None:
         return True, "ready"
     path = exe() if callable(exe) else shutil.which(exe)
-    name = "spicetify" if callable(exe) else exe
+    name = getattr(exe, "label", "spicetify") if callable(exe) else exe
     return (True, "installed") if path else (False, f"{name} not found")
 
 
@@ -4910,6 +5870,8 @@ def restore_originals(s, log):
         shutil.rmtree(ORIG_DIR, ignore_errors=True)
     else:
         log("   no config files to put back")
+    if IS_WINDOWS:
+        restore_win_registry(s, log)
     orig = s.pop("kde_original_scheme", None)
     if orig:
         run_cmd(["plasma-apply-colorscheme", orig], log)
@@ -4933,8 +5895,8 @@ def restore_originals(s, log):
         log(f"   icon theme back to {icons}")
     s.pop("spicetify_ready", None)
     kwin_reconfigure()
-    signal_procs("kitty", signal.SIGUSR1)
-    signal_procs("cava", signal.SIGUSR1)
+    signal_procs("kitty", getattr(signal, "SIGUSR1", None))
+    signal_procs("cava", getattr(signal, "SIGUSR1", None))
     log("✓ Originals restored.")
 
 
@@ -4953,15 +5915,16 @@ def detect_conky_files():
     return [{"path": str(f), "recolor": False, "autostart": False} for f in found]
 
 
-ALBUM_DEFAULTS = {"enabled": False, "targets": ["kitty", "cava", "widgets", "visualizers"], "light": False,
-                  "revert": True}
+ALBUM_DEFAULTS = {"enabled": False, "light": False, "revert": True,
+                  "targets": ["visualizers", "wterminal"] if IS_WINDOWS else ["kitty", "cava", "widgets", "visualizers"]}
 
 
 def default_settings():
     return {"palette": copy.deepcopy(PRESETS["Catppuccin Mocha"]),
-            "targets": {key: key in ("kitty", "cava", "kde", "widgets", "visualizers") for key, *_ in TARGETS},
+            "targets": {key: key in ("kitty", "cava", "kde", "widgets", "visualizers", "winaccent", "wterminal")
+                        for key, *_ in TARGETS},
             "wallpaper": "",
-            "widgets": [widget_template("clock"), widget_template("system")],
+            "widgets": [] if IS_WINDOWS else [widget_template("clock"), widget_template("system")],
             "visualizers": [vis_template("bottom")],
             "panels": [],
             "external_conky": detect_conky_files(),
@@ -4972,6 +5935,7 @@ def default_settings():
             "icon_theme": "",
             "papirus_folders": True,
             "kde_accent": True,
+            "win_mode": "auto", "win_titlebars": True, "win_taskbar": False,
             "check_updates": True,
             "last_update_check": 0,
             "skip_version": ""}
@@ -4980,7 +5944,7 @@ def default_settings():
 def load_settings():
     s = default_settings()
     try:
-        data = json.loads(SETTINGS_FILE.read_text())
+        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
         targets = s["targets"]
         album = s["album"]
         s.update(data)
@@ -5009,12 +5973,27 @@ def save_settings(s):
     with _save_lock:
         CFG_DIR.mkdir(parents=True, exist_ok=True)
         tmp = SETTINGS_FILE.with_suffix(f".{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(s, indent=2))
+        tmp.write_text(json.dumps(s, indent=2), encoding="utf-8")
         tmp.replace(SETTINGS_FILE)
 
 
 def service_wanted(s):
     return bool(s.get("tray") or s["album"].get("enabled"))
+
+
+WIN_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+
+
+def _win_autostart(command):
+    import winreg
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, WIN_RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
+        if command:
+            winreg.SetValueEx(k, "ThemeForge", 0, winreg.REG_SZ, command)
+        else:
+            try:
+                winreg.DeleteValue(k, "ThemeForge")
+            except FileNotFoundError:
+                pass
 
 
 def update_autostart(s):
@@ -5023,12 +6002,19 @@ def update_autostart(s):
               or any(v.get("autostart") for v in s.get("visualizers", []))
               or any(x.get("autostart") for x in s.get("panels", []))
               or service_wanted(s))
+    if IS_WINDOWS:
+        cmd = subprocess.list2cmdline(self_command("--start-widgets")) if wanted else ""
+        try:
+            _win_autostart(cmd)
+        except OSError as e:
+            print(f"ThemeForge: couldn't update autostart ({e})", file=sys.stderr)
+        return
     if wanted:
         AUTOSTART_FILE.parent.mkdir(parents=True, exist_ok=True)
         AUTOSTART_FILE.write_text(
             "[Desktop Entry]\nType=Application\nName=ThemeForge (widgets, visualizers, tray)\n"
             f'Exec="{sys.executable}" "{SCRIPT}" --start-widgets\n'
-            "X-KDE-autostart-after=panel\nNoDisplay=true\n")
+            "X-KDE-autostart-after=panel\nNoDisplay=true\n", encoding="utf-8")
     elif AUTOSTART_FILE.exists():
         AUTOSTART_FILE.unlink()
 
@@ -5059,9 +6045,11 @@ def start_autostart(s):
 
 BOOKKEEPING_KEYS = ("kde_original_scheme", "kde_original_accent", "icon_original_theme",
                     "papirus_color_applied", "spicetify_ready")
-ALBUM_TARGETS = [("kitty", "kitty"), ("cava", "cava"), ("widgets", "Widgets"),
-                 ("visualizers", "Visualizers & panels"), ("konsole", "Konsole"), ("discord", "Discord"),
-                 ("btop", "btop"), ("kde", "KDE Plasma (slower, briefly redraws apps)")]
+ALBUM_TARGETS = [("visualizers", "Visualizers & panels"), ("wterminal", "Windows Terminal"),
+                 ("discord", "Discord"), ("winaccent", "Windows accent color")] if IS_WINDOWS else [
+    ("kitty", "kitty"), ("cava", "cava"), ("widgets", "Widgets"),
+    ("visualizers", "Visualizers & panels"), ("konsole", "Konsole"), ("discord", "Discord"),
+    ("btop", "btop"), ("kde", "KDE Plasma (slower, briefly redraws apps)")]
 ALBUM_STATUS_FILE = CFG_DIR / "album-status.json"
 SHORTCUT_DESKTOP = HOME / ".local" / "share" / "applications" / "themeforge-next-profile.desktop"
 APPLY_LOCK = threading.RLock()
@@ -5102,7 +6090,7 @@ def list_user_themes():
 
 
 def load_user_theme(name):
-    p = json.loads((THEMES_DIR / f"{name}.json").read_text())
+    p = json.loads((THEMES_DIR / f"{name}.json").read_text(encoding="utf-8"))
     p["name"] = name
     if not valid_palette(p):
         raise ValueError("that theme file is missing some colors")
@@ -5200,18 +6188,43 @@ def next_profile_name(s):
 
 
 def notify(title, body=""):
+    if IS_WINDOWS:
+        return                              # the tray shows its own messages on Windows
     if shutil.which("notify-send"):
         subprocess.Popen(["notify-send", "-a", "ThemeForge", "-i", "preferences-desktop-color", title, body],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+WIN_HOTKEY = "CTRL+ALT+SHIFT+T"
+
+
+def win_shortcut_path():
+    return _appdata() / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "ThemeForge Next Profile.lnk"
+
+
+def ps_quote(text):
+    return "'" + str(text).replace("'", "''") + "'"
+
+
 def install_shortcut_entry():
+    if IS_WINDOWS:
+        # Windows runs a Start-menu shortcut's hotkey from anywhere, so the shortcut *is* the key binding
+        lnk = win_shortcut_path()
+        lnk.parent.mkdir(parents=True, exist_ok=True)
+        cmd = self_command("--next-profile")
+        ps = (f"$s=(New-Object -ComObject WScript.Shell).CreateShortcut({ps_quote(lnk)});"
+              f"$s.TargetPath={ps_quote(cmd[0])};$s.Arguments={ps_quote(subprocess.list2cmdline(cmd[1:]))};"
+              f"$s.Hotkey={ps_quote(WIN_HOTKEY)};$s.Description='Switch to your next ThemeForge desktop profile';"
+              f"$s.WorkingDirectory={ps_quote(Path(cmd[0]).parent)};$s.Save()")
+        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                       capture_output=True, timeout=30, **NOWINDOW)
+        return lnk
     SHORTCUT_DESKTOP.parent.mkdir(parents=True, exist_ok=True)
     SHORTCUT_DESKTOP.write_text(
         "[Desktop Entry]\nType=Application\nName=ThemeForge: Next profile\n"
         "Comment=Switch to your next ThemeForge desktop profile\n"
         f'Exec="{sys.executable}" "{SCRIPT}" --next-profile\n'
-        "Icon=preferences-desktop-color\nCategories=Settings;Utility;\nTerminal=false\n")
+        "Icon=preferences-desktop-color\nCategories=Settings;Utility;\nTerminal=false\n", encoding="utf-8")
     subprocess.run(["update-desktop-database", str(SHORTCUT_DESKTOP.parent)], capture_output=True)
     return SHORTCUT_DESKTOP
 
@@ -5261,11 +6274,8 @@ class AlbumArtWatcher(QObject):
         self.idle_since = None
         self.busy = False
         self.pending = None
-        self.proc = QProcess(self)
-        self.proc.finished.connect(self.on_np)
-        self.timer = QTimer(self)
-        self.timer.setInterval(2000)
-        self.timer.timeout.connect(self.poll)
+        self.media = MediaSource(2.0, self)
+        self.media.updated.connect(self.on_np)
         self.finished.connect(self.on_finished)
 
     def set_enabled(self, on):
@@ -5274,21 +6284,15 @@ class AlbumArtWatcher(QObject):
         self.enabled = on
         if on:
             self.last_art = None
-            self.timer.start()
-            self.poll()
+            self.media.start()
         else:
-            self.timer.stop()
+            self.media.stop()
             if self.active:
                 self.run(None)
 
-    def poll(self):
-        if self.proc.state() == QProcess.NotRunning and shutil.which("playerctl"):
-            self.proc.start("playerctl", ["metadata", "--format", NP_FORMAT])
-
-    def on_np(self, *_):
+    def on_np(self, np):
         if not self.enabled:
             return
-        np = parse_np(bytes(self.proc.readAllStandardOutput()).decode(errors="ignore"))
         if np and np["status"] == "Playing" and np["art"]:
             self.idle_since = None
             if np["art"] != self.last_art:
@@ -5328,7 +6332,7 @@ class AlbumArtWatcher(QObject):
                 apply_targets(p, s, keys, print)
                 save_bookkeeping(s)
             self.active = np is not None
-            ALBUM_STATUS_FILE.write_text(json.dumps(status))
+            ALBUM_STATUS_FILE.write_text(json.dumps(status), encoding="utf-8")
         except Exception as e:
             print(f"album-art mode: {e}", file=sys.stderr)
         finally:
@@ -5476,7 +6480,7 @@ class Service(QObject):
 
 
 def open_app():
-    subprocess.Popen([sys.executable, str(SCRIPT)], start_new_session=True,
+    subprocess.Popen(self_command(), **QUIET,
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
@@ -6064,7 +7068,7 @@ class ColorsTab(QWidget):
                 g.addWidget(btn, row + 1, j + 1)
         col.addWidget(gb)
 
-        gb = QGroupBox("cava gradient  (bottom → top)")
+        gb = QGroupBox(("Visualizer" if IS_WINDOWS else "cava") + " gradient  (bottom → top)")
         v = QVBoxLayout(gb)
         self.grad_row = QHBoxLayout()
         self.grad_row.setSpacing(4)
@@ -6816,7 +7820,7 @@ class VisualizersTab(QWidget):
             ("width", "int", "Width", (0, 8000, " px")),
             ("height", "int", "Height", (20, 4000, " px")),
             ("screen", "screen", "Screen", None),
-            ("x11", "bool", "Pin to exact position (runs through XWayland)", None),
+            *X11_ROW,
             ("autostart", "bool", "Start when I log in", None),
         ]),
     ]
@@ -6854,7 +7858,9 @@ class VisualizersTab(QWidget):
             row.addWidget(b)
         lv.addLayout(row)
         lv.addWidget(hint_label("Each visualizer is its own click-through window on your desktop, "
-                                "drawn by ThemeForge from cava's audio data. Run as many as you like."))
+                                "drawn by ThemeForge from " + ("whatever your speakers are playing"
+                                                               if IS_WINDOWS else "cava's audio data")
+                                + ". Run as many as you like."))
         split.addWidget(left)
 
         mid_scroll = QScrollArea()
@@ -7053,9 +8059,8 @@ class VisualizersTab(QWidget):
     def run(self):
         if not self.cur:
             return
-        if not shutil.which("cava"):
-            QMessageBox.information(self, "cava needed", "Visualizers get their audio data from cava.\n\n"
-                                    "Install it with:\n    sudo dnf install cava")
+        if not audio_available():
+            QMessageBox.information(self, *missing_dep("audio"))
             return
         self.win.save_now()          # the visualizer process reads settings from disk
         if not vis_pids(self.cur["id"]):
@@ -7091,6 +8096,9 @@ class VisualizersTab(QWidget):
 # ── Panels tab ─────────────────────────────────────────────────────
 
 def desktop_dir():
+    if IS_WINDOWS:
+        from PySide6.QtCore import QStandardPaths
+        return Path(QStandardPaths.writableLocation(QStandardPaths.DesktopLocation) or HOME / "Desktop")
     try:
         out = subprocess.run(["xdg-user-dir", "DESKTOP"], capture_output=True, text=True, timeout=3).stdout.strip()
         if out and Path(out).is_dir():
@@ -7098,6 +8106,25 @@ def desktop_dir():
     except (FileNotFoundError, subprocess.SubprocessError):
         pass
     return HOME / "Desktop"
+
+
+SHORTCUT_PATTERNS = ("*.lnk", "*.url") if IS_WINDOWS else ("*.desktop",)
+
+
+def desktop_shortcuts():
+    """Shortcut files on the desktop (on Windows also the all-users Public desktop, where installers put them)."""
+    dirs = [desktop_dir()]
+    if IS_WINDOWS and os.environ.get("PUBLIC"):
+        dirs.append(Path(os.environ["PUBLIC"]) / "Desktop")
+    return sorted({f for d in dirs if d.is_dir() for pat in SHORTCUT_PATTERNS for f in d.glob(pat)},
+                  key=lambda f: f.name.lower())
+
+
+def apps_menu_dir():
+    if IS_WINDOWS:
+        return _appdata() / "Microsoft" / "Windows" / "Start Menu" / "Programs"
+    start = HOME / ".local" / "share" / "applications"
+    return start if start.exists() else Path("/usr/share/applications")
 
 
 def copy_shortcuts(files, folder):
@@ -7238,11 +8265,11 @@ class PanelsTab(QWidget):
     MOTION = [("animations", "bool", "Animations", None), ("entrance", "combo", "Entrance", ENTRANCES),
               ("anim_speed", "int", "Animation speed", (25, 300, " %")),
               ("shimmer", "bool", "Animated shimmer outline", None), ("pulse", "bool", "Breathing glow", None),
-              ("glow", "bool", "Glow with the bass (needs cava)", None),
+              ("glow", "bool", "Glow with the bass" + ("" if IS_WINDOWS else " (needs cava)"), None),
               ("hover_fade", "bool", "Fade out while the mouse is over it", None)]
     PLACE = [("alignment", "combo", "Position", ALIGNMENTS), ("gap_x", "int", "Offset  ↔", (-8000, 8000, " px")),
              ("gap_y", "int", "Offset  ↕", (-8000, 8000, " px")), ("screen", "screen", "Screen", None),
-             ("x11", "bool", "Pin to exact position (runs through XWayland)", None),
+             *X11_ROW,
              ("autostart", "bool", "Start when I log in", None)]
 
     def __init__(self, win):
@@ -7306,7 +8333,8 @@ class PanelsTab(QWidget):
         tl = QVBoxLayout(self.launcher_tools)
         tl.setContentsMargins(0, 4, 0, 0)
         for label, fn in (("Copy game shortcuts from my Desktop", self.copy_from_desktop),
-                          ("Add apps or games from the app menu…", self.add_apps),
+                          ("Add apps or games from the " + ("Start menu…" if IS_WINDOWS else "app menu…"),
+                           self.add_apps),
                           ("Open the shortcuts folder", self.open_folder)):
             b = QPushButton(label)
             b.clicked.connect(fn)
@@ -7518,22 +8546,21 @@ class PanelsTab(QWidget):
     def copy_from_desktop(self):
         if not self.cur:
             return
-        files = sorted(desktop_dir().glob("*.desktop"))
+        files = desktop_shortcuts()
         n = copy_shortcuts(files, self.cur["folder"])
         self.preview.reload_items()
         QMessageBox.information(self, "Shortcuts copied",
                                 f"Copied {n} shortcut(s) into {self.cur['folder']}.\n\n"
                                 "The originals are still on your Desktop - delete them there if you want a "
                                 "clean desktop." if n else
-                                f"No new .desktop shortcuts found on {desktop_dir()}.")
+                                f"No new shortcuts ({', '.join(SHORTCUT_PATTERNS)}) found on {desktop_dir()}.")
 
     def add_apps(self):
         if not self.cur:
             return
-        start = HOME / ".local" / "share" / "applications"
+        what = ("App and game shortcuts (*.lnk *.url *.exe)" if IS_WINDOWS else "App shortcuts (*.desktop)")
         files, _ = QFileDialog.getOpenFileNames(self, "Pick apps or games (Steam games live here)",
-                                                str(start if start.exists() else "/usr/share/applications"),
-                                                "App shortcuts (*.desktop)")
+                                                str(apps_menu_dir()), what)
         if files:
             copy_shortcuts(files, self.cur["folder"])
             self.preview.reload_items()
@@ -7579,9 +8606,8 @@ class PanelsTab(QWidget):
     def run(self):
         if not self.cur:
             return
-        if self.cur["kind"] == "nowplaying" and not shutil.which("playerctl"):
-            QMessageBox.information(self, "playerctl needed", "The now playing card reads your music player "
-                                    "through playerctl.\n\nInstall it with:\n    sudo dnf install playerctl")
+        if self.cur["kind"] == "nowplaying" and not media_available():
+            QMessageBox.information(self, *missing_dep("media", "The now playing card"))
         if self.cur["kind"] == "launcher":
             Path(os.path.expanduser(self.cur["folder"])).mkdir(parents=True, exist_ok=True)
         self.win.save_now()
@@ -7707,8 +8733,7 @@ class ProfilesTab(QWidget):
         self.album_cb.setStyleSheet("font-weight: bold;")
         self.album_cb.toggled.connect(lambda on: self.set_album("enabled", on))
         v.addWidget(self.album_cb)
-        v.addWidget(hint_label("Works with any player that shows up in playerctl - Spotify, browsers, mpv, "
-                               "Strawberry, Elisa… Your saved theme isn't touched; ThemeForge goes back to it when "
+        v.addWidget(hint_label(PLAYERS_HINT + " Your saved theme isn't touched; ThemeForge goes back to it when "
                                "you turn this off."))
         v.addWidget(section_label("What follows the album art"))
         grid = QGridLayout()
@@ -7871,12 +8896,23 @@ class ProfilesTab(QWidget):
         self.win.save_now()
         update_autostart(self.s)
         if service_wanted(self.s):
-            if self.s["album"].get("enabled") and not shutil.which("playerctl"):
-                QMessageBox.information(self, "playerctl needed", "Album-art mode reads your music player "
-                                        "through playerctl.\n\nInstall it with:\n    sudo dnf install playerctl")
+            if self.s["album"].get("enabled") and not media_available():
+                QMessageBox.information(self, *missing_dep("media", "Album-art mode"))
             ensure_service()
 
     def setup_shortcut(self):
+        if IS_WINDOWS:
+            path = install_shortcut_entry()
+            if not path.exists():
+                QMessageBox.warning(self, "Keyboard shortcut", "Windows didn't create the shortcut.")
+                return
+            QMessageBox.information(
+                self, "Keyboard shortcut",
+                "Press Ctrl+Alt+Shift+T anywhere to switch to your next profile.\n\n"
+                "To use different keys, right-click “ThemeForge Next Profile” in the Start menu → "
+                "Open file location → Properties, and set “Shortcut key”.\n\n"
+                f"({path})")
+            return
         path = install_shortcut_entry()
         QMessageBox.information(
             self, "Keyboard shortcut",
@@ -7899,7 +8935,7 @@ class ProfilesTab(QWidget):
             return
         running = bool(tf_pids("--service"))
         try:
-            st = json.loads(ALBUM_STATUS_FILE.read_text())
+            st = json.loads(ALBUM_STATUS_FILE.read_text(encoding="utf-8"))
         except Exception:
             st = {}
         if not running:
@@ -7963,19 +8999,30 @@ class TargetsTab(QWidget):
         v.setContentsMargins(10, 0, 0, 0)
         gb = QGroupBox("Options")
         f = QFormLayout(gb)
-        self.icon_box = QComboBox()
-        self.icon_box.addItem("Keep my current icon theme", "")
-        for name in sorted(installed_icon_themes(), key=str.lower):
-            self.icon_box.addItem(name, name)
-        self.icon_box.currentIndexChanged.connect(
-            lambda i: self.set_opt("icon_theme", self.icon_box.itemData(i)))
-        f.addRow("Icon theme", self.icon_box)
-        self.papirus = QCheckBox("Recolor Papirus folders to match the accent")
-        self.papirus.toggled.connect(lambda on: self.set_opt("papirus_folders", on))
-        f.addRow("", self.papirus)
-        self.kde_accent = QCheckBox("Set the KDE accent color too")
-        self.kde_accent.toggled.connect(lambda on: self.set_opt("kde_accent", on))
-        f.addRow("", self.kde_accent)
+        self.bools = {}
+        if IS_WINDOWS:
+            self.mode_box = QComboBox()
+            for key, label in WIN_MODES:
+                self.mode_box.addItem(label, key)
+            self.mode_box.currentIndexChanged.connect(lambda i: self.set_opt("win_mode", self.mode_box.itemData(i)))
+            f.addRow("Light / dark mode", self.mode_box)
+            opts = [("win_titlebars", "Color window title bars and borders with the accent", True),
+                    ("win_taskbar", "Color Start, the taskbar and the action center too", False)]
+        else:
+            self.icon_box = QComboBox()
+            self.icon_box.addItem("Keep my current icon theme", "")
+            for name in sorted(installed_icon_themes(), key=str.lower):
+                self.icon_box.addItem(name, name)
+            self.icon_box.currentIndexChanged.connect(
+                lambda i: self.set_opt("icon_theme", self.icon_box.itemData(i)))
+            f.addRow("Icon theme", self.icon_box)
+            opts = [("papirus_folders", "Recolor Papirus folders to match the accent", True),
+                    ("kde_accent", "Set the KDE accent color too", True)]
+        for key, label, default in opts:
+            cb = QCheckBox(label)
+            cb.toggled.connect(lambda on, k=key: self.set_opt(k, on))
+            self.bools[key] = (cb, default)
+            f.addRow("", cb)
         clients = discord_clients()
         f.addRow("Discord", QLabel(", ".join(n for n, _ in clients) if clients else "no theme-capable client found"))
         b_exports = QPushButton("Open exported themes folder")
@@ -8004,7 +9051,9 @@ class TargetsTab(QWidget):
         v.addWidget(self.log, 1)
         v.addWidget(hint_label(
             "Before changing any of your config files for the first time, ThemeForge copies the original "
-            f"into {ORIG_DIR}. “Restore” puts those back, plus your KDE colors, accent and icon theme."))
+            f"into {ORIG_DIR}. “Restore” puts those back, plus "
+            + ("your Windows accent color and light/dark mode." if IS_WINDOWS
+               else "your KDE colors, accent and icon theme.")))
         split.addWidget(right)
         split.setSizes([560, 720])
 
@@ -8041,17 +9090,22 @@ class TargetsTab(QWidget):
             cb.blockSignals(True)
             cb.setChecked(bool(st["targets"].get(key)))
             cb.blockSignals(False)
-        for w, val in ((self.papirus, st.get("papirus_folders", True)), (self.kde_accent, st.get("kde_accent", True))):
+        for key, (w, default) in self.bools.items():
             w.blockSignals(True)
-            w.setChecked(bool(val))
+            w.setChecked(bool(st.get(key, default)))
             w.blockSignals(False)
-        self.icon_box.blockSignals(True)
-        idx = self.icon_box.findData(st.get("icon_theme", ""))
-        if idx < 0:
-            self.icon_box.addItem(f"{st['icon_theme']} (not installed)", st["icon_theme"])
-            idx = self.icon_box.count() - 1
-        self.icon_box.setCurrentIndex(idx)
-        self.icon_box.blockSignals(False)
+        if IS_WINDOWS:
+            self.mode_box.blockSignals(True)
+            self.mode_box.setCurrentIndex(max(0, self.mode_box.findData(st.get("win_mode", "auto"))))
+            self.mode_box.blockSignals(False)
+        else:
+            self.icon_box.blockSignals(True)
+            idx = self.icon_box.findData(st.get("icon_theme", ""))
+            if idx < 0:
+                self.icon_box.addItem(f"{st['icon_theme']} (not installed)", st["icon_theme"])
+                idx = self.icon_box.count() - 1
+            self.icon_box.setCurrentIndex(idx)
+            self.icon_box.blockSignals(False)
         self.auto_update.blockSignals(True)
         self.auto_update.setChecked(bool(self.win.settings.get("check_updates", True)))
         self.auto_update.blockSignals(False)
@@ -8168,7 +9222,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.settings = load_settings()
         self.setWindowTitle("ThemeForge")
-        self.setWindowIcon(QIcon.fromTheme("preferences-desktop-color"))
+        icon = QIcon.fromTheme("preferences-desktop-color")
+        self.setWindowIcon(palette_icon(PRESETS["Catppuccin Mocha"], 256) if icon.isNull() else icon)
         self.resize(1320, 860)
 
         central = QWidget()
@@ -8244,7 +9299,8 @@ class MainWindow(QMainWindow):
         self.profiles_tab = ProfilesTab(self)
         self.targets_tab = TargetsTab(self)
         self.tabs.addTab(self.colors_tab, "Colors")
-        self.tabs.addTab(self.widgets_tab, "Widgets")
+        if not IS_WINDOWS:                   # conky widgets are Linux-only; panels cover the same ground
+            self.tabs.addTab(self.widgets_tab, "Widgets")
         self.tabs.addTab(self.vis_tab, "Visualizers")
         self.tabs.addTab(self.panels_tab, "Panels")
         self.tabs.addTab(self.profiles_tab, "Profiles")
@@ -8395,7 +9451,7 @@ class MainWindow(QMainWindow):
         if path.exists() and QMessageBox.question(self, "Save theme", f"Replace “{name}”?") != QMessageBox.Yes:
             return
         self.pal["name"] = name
-        path.write_text(json.dumps(self.pal, indent=2))
+        path.write_text(json.dumps(self.pal, indent=2), encoding="utf-8")
         self.populate_presets(name)
         self.save_now()
         self.statusBar().showMessage(f"Saved “{name}”", 4000)
@@ -8418,7 +9474,7 @@ class MainWindow(QMainWindow):
             n += 1
         p = copy.deepcopy(p)
         p["name"] = name
-        (THEMES_DIR / f"{name}.json").write_text(json.dumps(p, indent=2))
+        (THEMES_DIR / f"{name}.json").write_text(json.dumps(p, indent=2), encoding="utf-8")
         return name
 
     def import_theme(self):
@@ -8426,7 +9482,7 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            data = json.loads(Path(path).read_text())
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
             p = data.get("palette", data)
             p.setdefault("name", data.get("name") or Path(path).stem)
             if "gradient" not in p and all(k in p for k, _ in ROLES) and len(p.get("ansi", [])) == 16:
@@ -8448,7 +9504,7 @@ class MainWindow(QMainWindow):
         if path:
             author = self.settings.get("theme_author", "")
             out = {"name": name, "author": author, "description": "", "palette": self.pal}
-            Path(path).write_text(json.dumps(out, indent=2))
+            Path(path).write_text(json.dumps(out, indent=2), encoding="utf-8")
             self.statusBar().showMessage(f"Exported to {path}", 6000)
 
     def browse_community(self):
@@ -8517,9 +9573,9 @@ class MainWindow(QMainWindow):
         if not manual and rel["version"] == self.settings.get("skip_version"):
             return
         self.pending_release = rel
-        if is_system_install():
+        if manual_update_hint():
             self.banner_text.setText(f"<b>ThemeForge {rel['version']}</b> is out — you have {VERSION}. "
-                                     "Update it with <code>sudo dnf upgrade themeforge</code>.")
+                                     + manual_update_hint())
             self.banner_update_btn.hide()
         else:
             self.banner_text.setText(f"<b>ThemeForge {rel['version']}</b> is out — you have {VERSION}.")
@@ -8554,6 +9610,14 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Update failed", f"ThemeForge wasn't changed:\n{err}")
             return
         self.banner.hide()
+        rel = self.pending_release or {}
+        if rel.get("installer"):
+            QMessageBox.information(self, "Updating", f"ThemeForge closes now, installs {version} and opens again."
+                                    " Panels and visualizers that are running come back too.")
+            self.save_now()
+            run_windows_installer(rel["installer"], self.settings)
+            QApplication.quit()
+            return
         self.targets_tab.update_status.setText(f"Updated to {version} - restart to use it.")
         if QMessageBox.question(self, "Update installed",
                                 f"ThemeForge {version} is installed.\nRestart now?") == QMessageBox.Yes:
@@ -8577,7 +9641,11 @@ class MainWindow(QMainWindow):
                     break
                 time.sleep(0.1)
             ensure_service()
-        os.execv(sys.executable, [sys.executable, str(SCRIPT)])
+        if IS_WINDOWS:
+            subprocess.Popen(self_command(), **QUIET)
+            QApplication.quit()
+        else:
+            os.execv(sys.executable, [sys.executable, str(SCRIPT)])
 
     def schedule_save(self):
         self.save_timer.start()
@@ -8595,11 +9663,186 @@ class MainWindow(QMainWindow):
         super().closeEvent(e)
 
 
+# ════════════════════════════════════════════════════════════════════
+#  Self-test (used by CI on Windows, and handy for bug reports)
+# ════════════════════════════════════════════════════════════════════
+
+def run_selftest(report_path=None):
+    """Exercise everything that doesn't need a person watching: the bundled libraries, settings, stats,
+    every panel and visualizer style drawn off-screen, the theme writers and the audio and media back ends.
+    Writes a JSON report; returns 0 when every required check passed."""
+    from PySide6.QtGui import QImage
+    app = QApplication.instance() or QApplication(sys.argv[:1])
+    checks = []
+
+    def check(name, fn, required=True):
+        try:
+            detail = fn()
+            checks.append({"name": name, "ok": True, "required": required, "detail": repr(detail)[:300]})
+        except BaseException as e:      # noqa: BLE001 - a self-test reports everything
+            checks.append({"name": name, "ok": False, "required": required,
+                           "detail": f"{type(e).__name__}: {e}"[:600]})
+
+    def imports():
+        mods = ["PySide6.QtWidgets", "psutil"] if IS_WINDOWS else ["PySide6.QtWidgets"]
+        if IS_WINDOWS:
+            mods += ["numpy", "pyaudiowpatch", "winrt.windows.media.control", "winrt.windows.foundation",
+                     "winrt.windows.storage.streams"]
+        import importlib
+        return [importlib.import_module(m).__name__ for m in mods]
+
+    def settings():
+        s = load_settings()
+        assert valid_palette(s["palette"])
+        save_settings(s)
+        return sorted(k for k, on in s["targets"].items() if on)
+
+    def stats():
+        _, state = collect_stats()
+        time.sleep(0.3)
+        st, _ = collect_stats(state)
+        assert 0 <= st["cpu"][0] <= 1 and 0 <= st["ram"][0] <= 1
+        return {k: (v[1] if isinstance(v, tuple) else v) for k, v in st.items() if k != "cores"}
+
+    def paint_all():
+        pal = PRESETS["Dracula"]
+        state = {"t": 1.0, "now": time.time(), "appear": 1.0, "glow": 0.3, "drives": SAMPLE_DRIVES,
+                 "weather": SAMPLE_WEATHER}
+        for kind, _ in PANEL_KINDS:
+            panel = panel_template(kind)
+            n = len(SAMPLE_DRIVES) if kind == "drives" else 0
+            _, full = panel_layout(panel, n)
+            img = QImage(int(full.width()) + 40, int(full.height()) + 40, QImage.Format_ARGB32)
+            img.fill(0)
+            qp = QPainter(img)
+            paint_panel(qp, QPointF(20, 20), panel, pal, state)
+            qp.end()
+        for style, _ in VIS_STYLES:
+            v = dict(vis_template(), style=style, peaks=True, glow=True)
+            vals = fake_spectrum(vis_bar_count(v), 1.0, v["stereo"])
+            img = QImage(400, 300, QImage.Format_ARGB32)
+            img.fill(0)
+            qp = QPainter(img)
+            paint_visualizer(qp, QRectF(0, 0, 400, 300), vals, v, pal, update_peaks([], vals, 0), 1.0,
+                             ParticleSim())
+            qp.end()
+        return f"{len(PANEL_KINDS)} panels, {len(VIS_STYLES)} visualizer styles"
+
+    def writers():
+        p = PRESETS["Nord"]
+        out = [len(json.dumps(wt_scheme(p))), len(rainmeter_vars(p)), len(win_accent_values(p, {}))]
+        json.loads(strip_jsonc('{"a": [1, 2,], // note\n "b": "x//y", /* c */}'))
+        return out
+
+    def spectrum():
+        import numpy as np
+        sp = Spectrum(32, 48000, stereo=True)
+        t = np.arange(sp.n_fft) / 48000
+        x = np.sin(2 * np.pi * 1000 * t).astype(np.float32)[:, None]
+        vals = sp.process(np.hstack([x, x]))
+        assert len(vals) == 32 and max(vals) > 0
+        return round(max(vals), 3)
+
+    def loopback_device():
+        import pyaudiowpatch as pyaudio
+        pa = pyaudio.PyAudio()
+        try:
+            dev = pa.get_default_wasapi_loopback()
+            return dev["name"], int(dev["defaultSampleRate"])
+        finally:
+            pa.terminate()
+
+    def media_session():
+        import asyncio
+        from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as Manager
+        loop = asyncio.new_event_loop()
+        try:
+            mgr = loop.run_until_complete(Manager.request_async())
+            sess = mgr.get_current_session()
+            return "no media playing" if sess is None else sess.source_app_user_model_id
+        finally:
+            loop.close()
+
+    def processes():
+        return {"self": self_command("--panel", "x"), "running": len(_process_argvs())}
+
+    check("bundled libraries import", imports)
+    check("settings load and save", settings)
+    check("system stats", stats)
+    check("drives", lambda: [d["mount"] for d in drives_info()])
+    check("GPU reading", _gpu_reading, required=False)
+    check("panels and visualizers paint", paint_all)
+    check("theme file writers", writers)
+    check("process lookup", processes)
+    check("media source available", lambda: media_available() or (_ for _ in ()).throw(RuntimeError("no")),
+          required=IS_WINDOWS)
+    check("audio capture available", lambda: audio_available() or (_ for _ in ()).throw(RuntimeError("no")),
+          required=IS_WINDOWS)
+    if IS_WINDOWS or importlib_ok("numpy"):
+        check("spectrum analyzer", spectrum, required=IS_WINDOWS)
+    if IS_WINDOWS:
+        check("Windows Terminal found", find_windows_terminal, required=False)
+        check("audio output device (WASAPI loopback)", loopback_device, required=False)
+        check("Windows media controls", media_session, required=False)
+        check("accent color registry read", lambda: win_reg_get(WIN_DWM, "AccentColor"), required=False)
+    if os.environ.get("THEMEFORGE_SELFTEST_PROCESSES"):        # CI only: really start a panel and a visualizer
+        def child_processes():
+            s = load_settings()
+            panel, vis = panel_template("clock"), vis_template("bottom")
+            s["panels"].append(panel)
+            s["visualizers"].append(vis)
+            save_settings(s)
+            try:
+                start_panel(panel)
+                start_visualizer(vis)
+                found = {}
+                for _ in range(60):
+                    found = {"panel": panel_pids(panel["id"]), "visualizer": vis_pids(vis["id"])}
+                    if all(found.values()):
+                        break
+                    time.sleep(0.5)
+                time.sleep(3)                            # still alive a few seconds later?
+                alive = {"panel": panel_pids(panel["id"]), "visualizer": vis_pids(vis["id"])}
+                logs = {k: (d / f"{i}.log").read_text(encoding="utf-8", errors="replace")[-400:] if (d / f"{i}.log").exists() else ""
+                        for k, d, i in (("panel", PANELS_DIR, panel["id"]), ("visualizer", VIS_DIR, vis["id"]))}
+                if not all(alive.values()):
+                    raise RuntimeError(f"not running: {alive}; logs: {logs}")
+                return {"pids": alive, "logs": logs}
+            finally:
+                stop_panel(panel["id"])
+                stop_visualizer(vis["id"])
+                s = load_settings()
+                s["panels"] = [x for x in s["panels"] if x["id"] != panel["id"]]
+                s["visualizers"] = [x for x in s["visualizers"] if x["id"] != vis["id"]]
+                save_settings(s)
+        check("panel and visualizer processes start", child_processes)
+    failed = [c["name"] for c in checks if c["required"] and not c["ok"]]
+    report = {"version": VERSION, "platform": sys.platform, "frozen": IS_FROZEN, "python": sys.version.split()[0],
+              "qt_platform": app.platformName(), "checks": checks, "failed": failed}
+    text = json.dumps(report, indent=2)
+    if report_path:
+        Path(report_path).write_text(text, encoding="utf-8")
+    else:
+        print(text)
+    return 1 if failed else 0
+
+
+def importlib_ok(name):
+    import importlib.util
+    return importlib.util.find_spec(name) is not None
+
+
 def main():
     args = sys.argv[1:]
+    for name in ("stdout", "stderr"):          # a windowed Windows build has no console to print to
+        if getattr(sys, name) is None:
+            setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))
     if "--version" in args:
         print(f"ThemeForge {VERSION}")
         return
+    if "--selftest" in args:
+        i = args.index("--selftest")
+        sys.exit(run_selftest(args[i + 1] if i + 1 < len(args) else None))
     for flag, cls in (("--visualizer", VisualizerWindow), ("--panel", PanelWindow)):
         if flag in args:
             i = args.index(flag)
@@ -8643,7 +9886,12 @@ def main():
                 print(f"ThemeForge {VERSION} is the latest version.")
                 return
             print(f"Updating {VERSION} → {rel['version']}…")
-            print(f"Installed ThemeForge {install_update(rel)}. Restart ThemeForge to use it.")
+            version = install_update(rel)
+            if rel.get("installer"):
+                run_windows_installer(rel["installer"], load_settings())
+                print(f"Installing ThemeForge {version}…")
+                return
+            print(f"Installed ThemeForge {version}. Restart ThemeForge to use it.")
         except Exception as e:
             print(f"Update failed: {e}", file=sys.stderr)
             sys.exit(1)
@@ -8668,6 +9916,8 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("ThemeForge")
     app.setDesktopFileName("themeforge")
+    if IS_WINDOWS:
+        resume_after_update()
     win = MainWindow()
     win.show()
     sys.exit(app.exec())

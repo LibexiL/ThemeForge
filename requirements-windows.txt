@@ -1,0 +1,12 @@
+# Running ThemeForge from source on Windows (the installer and the portable zip already include all of this):
+#   py -m pip install -r requirements-windows.txt
+#   pyw themeforge.py
+PySide6>=6.5
+psutil>=5.9
+numpy>=1.24
+PyAudioWPatch>=0.2.12
+winrt-runtime>=2.0
+winrt-Windows.Foundation>=2.0
+winrt-Windows.Foundation.Collections>=2.0
+winrt-Windows.Media.Control>=2.0
+winrt-Windows.Storage.Streams>=2.0
