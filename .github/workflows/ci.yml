@@ -32,6 +32,7 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    timeout-minutes: 30
     defaults:
       run:
         shell: pwsh
@@ -62,7 +63,8 @@ jobs:
         env:
           THEMEFORGE_SELFTEST_PROCESSES: "1"
         run: |
-          $p = Start-Process dist\ThemeForge\ThemeForge.exe -ArgumentList "--selftest", "$pwd\selftest-frozen.json" -Wait -PassThru
+          $p = Start-Process dist\ThemeForge\ThemeForge.exe -ArgumentList "--selftest", "$pwd\selftest-frozen.json" -PassThru
+          $p.WaitForExit()
           "exit code $($p.ExitCode)"
       - name: Build the installer
         if: always()
@@ -78,12 +80,14 @@ jobs:
       - name: Install it and self-test the installed app
         if: always()
         run: |
-          $p = Start-Process dist\ThemeForge-Setup.exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
+          $p = Start-Process dist\ThemeForge-Setup.exe -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -PassThru
+          $p.WaitForExit()
           "installer exit code $($p.ExitCode)"
           Start-Sleep 3
           Get-Process ThemeForge -ErrorAction SilentlyContinue | Stop-Process -Force
           $exe = "$env:LOCALAPPDATA\Programs\ThemeForge\ThemeForge.exe"
-          $p = Start-Process $exe -ArgumentList "--selftest", "$pwd\selftest-installed.json" -Wait -PassThru
+          $p = Start-Process $exe -ArgumentList "--selftest", "$pwd\selftest-installed.json" -PassThru
+          $p.WaitForExit()
           "exit code $($p.ExitCode)"
       - name: Report
         if: always()

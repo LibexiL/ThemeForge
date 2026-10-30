@@ -57,6 +57,7 @@ jobs:
   windows:
     needs: release
     runs-on: windows-latest
+    timeout-minutes: 40
     defaults:
       run:
         shell: pwsh
@@ -72,7 +73,8 @@ jobs:
           if ($LASTEXITCODE) { throw "build failed" }
       - name: Self-test the built app
         run: |
-          $p = Start-Process dist\ThemeForge\ThemeForge.exe -ArgumentList "--selftest", "$pwd\selftest-frozen.json" -Wait -PassThru
+          $p = Start-Process dist\ThemeForge\ThemeForge.exe -ArgumentList "--selftest", "$pwd\selftest-frozen.json" -PassThru
+          $p.WaitForExit()
           python tools/selftest_report.py selftest-frozen.json
           if ($LASTEXITCODE) { throw "self-test failed" }
       - uses: softprops/action-gh-release@v2
