@@ -1,4 +1,5 @@
 """Tests for 2.3: animation helpers and the clock, system and weather panels."""
+import sys
 import copy
 
 from PySide6.QtCore import QPointF
@@ -74,7 +75,7 @@ def test_new_panel_layouts(tf):
     system = tf.panel_template("system")
     system["metrics"] = ["cpu", "ram", "gpu", "cputemp", "gputemp", "net"]
     lay, full = tf.panel_layout(system)
-    assert len(lay["gauges"]) == 5 and "net" in lay
+    assert len(lay["gauges"]) == (4 if sys.platform == "win32" else 5) and "net" in lay   # no CPU temp on Windows
     assert all(full.contains(r) for _, r in lay["gauges"])
     weather = tf.panel_template("weather")
     lay, full = tf.panel_layout(weather)
