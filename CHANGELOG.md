@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.1] - 2026-10-30
+
+### Fixed
+- **Windows:** "Show desktop" (Win+D) hid panels and visualizers. They now stay visible on the desktop and drop back behind your apps when you switch back to them, the way Rainmeter skins do.
+- **Windows:** the drives panel no longer lists USB sticks and install media unless you name them. The field is now labeled "Drives, e.g. C:, D:".
+- **Windows:** CPU temperature isn't offered, because Windows can't report it without extra drivers. New system panels show disk usage instead.
+
 ## [2.5.0] - 2026-10-30
 
 ### Added

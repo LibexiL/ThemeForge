@@ -49,7 +49,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
                                QScrollArea, QSpinBox, QSplitter, QTabWidget,
                                QToolButton, QVBoxLayout, QWidget)
 
-VERSION = "2.5.0"
+VERSION = "2.5.1"
 # GitHub "owner/repo" the auto-updater checks for new releases
 GITHUB_REPO = "LibexiL/ThemeForge"
 IS_WINDOWS = sys.platform == "win32"
@@ -1197,6 +1197,8 @@ PANEL_KINDS = [("launcher", "Games launcher"), ("nowplaying", "Now playing card"
                ("notes", "Notes & to-do")]
 SYSTEM_METRICS = [("cpu", "CPU"), ("ram", "RAM"), ("gpu", "GPU"), ("cputemp", "CPU temp"),
                   ("gputemp", "GPU temp"), ("disk", "Disk"), ("net", "Network"), ("cores", "CPU threads")]
+if IS_WINDOWS:            # Windows doesn't expose CPU temperature without extra drivers
+    SYSTEM_METRICS = [m for m in SYSTEM_METRICS if m[0] != "cputemp"]
 CLOCK_STYLES = [("ring", "Digital with seconds ring"), ("digital", "Digital"), ("analog", "Analog")]
 ART_STYLES = [("square", "Square"), ("vinyl", "Spinning record")]
 BACKGROUNDS = [("solid", "Solid"), ("gradient", "Gradient"), ("frosted", "Frosted glass"),
@@ -1223,7 +1225,7 @@ def panel_template(kind="launcher"):
          "clock_style": "ring", "clock_size": 44, "show_seconds": True, "show_date": True,
          "date_format": "%A, %d %B", "twelve_hour": False,
          # system gauges
-         "metrics": ["cpu", "ram", "gpu", "cputemp"], "gauge_size": 84, "units": "c",
+         "metrics": ["cpu", "ram", "gpu", "disk" if IS_WINDOWS else "cputemp"], "gauge_size": 84, "units": "c",
          # weather
          "location": "", "weather_units": "us", "forecast_days": 3, "refresh": 20,
          # calendar
@@ -1477,10 +1479,13 @@ def _win_drives(wanted):
     out = []
     for part in psutil.disk_partitions(all=False):
         mnt = part.mountpoint
-        if "cdrom" in part.opts or not part.fstype:
+        if not part.fstype:
             continue
-        if want and mnt.rstrip("\\/").upper() not in want:
-            continue
+        if want:
+            if mnt.rstrip("\\/").upper() not in want:
+                continue
+        elif "cdrom" in part.opts or "removable" in part.opts:
+            continue                 # USB sticks, SD cards and install media only when listed by name
         try:
             du = shutil.disk_usage(mnt)
         except OSError:
@@ -4032,22 +4037,72 @@ def paint_visualizer(qp, rect, vals, v, p, peaks=None, t=0.0, sim=None):
     qp.restore()
 
 
-def win_pin_to_desktop(hwnd):
-    """Make the desktop (Progman) own this window, so "Show desktop" (Win+D) leaves it on screen the way
-    Rainmeter skins stay, instead of hiding it with every other window."""
-    try:
+def desktop_layer_state(raised, fg_is_desktop, desktop_above_us, fg_is_ours):
+    """Whether ThemeForge's desktop windows should be lifted above other windows right now.
+    "Show desktop" (Win+D) doesn't minimize anything on Windows 10/11: it brings the desktop itself to the
+    front, which covers windows kept at the bottom. So, like Rainmeter's "On desktop" skins, lift ours above
+    it while the desktop is in front, and drop back once another app is in front again."""
+    if raised:
+        return fg_is_desktop or fg_is_ours
+    return fg_is_desktop and desktop_above_us
+
+
+class _WinZOrder:
+    """Win32 calls for keeping a ThemeForge window on the desktop layer (Windows only)."""
+    SWP = 0x0001 | 0x0002 | 0x0010            # NOSIZE | NOMOVE | NOACTIVATE
+    TOPMOST, NOTOPMOST, BOTTOM = -1, -2, 1
+
+    def __init__(self):
         import ctypes
-        user32 = ctypes.windll.user32
-        progman = user32.FindWindowW("Progman", None)
-        if not progman:
+        from ctypes import wintypes
+        self.ct = ctypes
+        u = ctypes.windll.user32
+        u.GetForegroundWindow.restype = wintypes.HWND
+        u.GetWindow.restype = wintypes.HWND
+        u.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+        u.FindWindowExW.restype = wintypes.HWND
+        u.FindWindowExW.argtypes = [wintypes.HWND, wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR]
+        u.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        u.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+        u.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                   ctypes.c_int, wintypes.UINT]
+        self.u, self.wt = u, wintypes
+
+    def class_name(self, hwnd):
+        buf = self.ct.create_unicode_buffer(64)
+        self.u.GetClassNameW(hwnd, buf, 64)
+        return buf.value
+
+    def foreground(self):
+        return self.u.GetForegroundWindow()
+
+    def is_desktop(self, hwnd):
+        if not hwnd or self.class_name(hwnd) not in ("Progman", "WorkerW"):
             return False
-        setter = getattr(user32, "SetWindowLongPtrW", None) or user32.SetWindowLongW
-        setter.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p]
-        setter(ctypes.c_void_p(hwnd), -8, ctypes.c_void_p(progman))        # GWLP_HWNDPARENT = owner
-        return True
-    except Exception as e:
-        print(f"couldn't pin to the desktop: {e}", file=sys.stderr)
+        return bool(self.u.FindWindowExW(hwnd, None, "SHELLDLL_DefView", None))
+
+    def is_ours(self, hwnd):
+        pid = self.wt.DWORD()
+        self.u.GetWindowThreadProcessId(hwnd, self.ct.byref(pid))
+        return pid.value == os.getpid()
+
+    def above(self, hwnd, other):
+        """Is `other` higher in the z-order than `hwnd`?"""
+        h = hwnd
+        for _ in range(5000):
+            h = self.u.GetWindow(h, 3)              # GW_HWNDPREV: the window just above
+            if not h:
+                return False
+            if h == other:
+                return True
         return False
+
+    def place(self, hwnd, raised):
+        if raised:
+            self.u.SetWindowPos(hwnd, self.TOPMOST, 0, 0, 0, 0, self.SWP)
+        else:
+            self.u.SetWindowPos(hwnd, self.NOTOPMOST, 0, 0, 0, 0, self.SWP)
+            self.u.SetWindowPos(hwnd, self.BOTTOM, 0, 0, 0, 0, self.SWP)
 
 
 class DesktopWindow(QWidget):
@@ -4058,7 +4113,9 @@ class DesktopWindow(QWidget):
     def __init__(self, item_id, click_through):
         super().__init__()
         self.item_id = item_id
-        flags = (Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnBottomHint | Qt.WindowDoesNotAcceptFocus)
+        flags = Qt.FramelessWindowHint | Qt.Tool | Qt.WindowDoesNotAcceptFocus
+        if not IS_WINDOWS:
+            flags |= Qt.WindowStaysOnBottomHint     # on Windows Qt would pin it there; _WinZOrder manages it
         if click_through:
             flags |= Qt.WindowTransparentForInput
         self.setWindowFlags(flags)
@@ -4081,8 +4138,35 @@ class DesktopWindow(QWidget):
 
     def showEvent(self, e):
         super().showEvent(e)
-        if IS_WINDOWS and not getattr(self, "_pinned", False):
-            self._pinned = win_pin_to_desktop(int(self.winId()))
+        if IS_WINDOWS and not hasattr(self, "zorder"):
+            try:
+                self.zorder = _WinZOrder()
+            except Exception as err:
+                print(f"desktop layer: {err}", file=sys.stderr)
+                self.zorder = None
+                return
+            self.raised = False
+            self.zorder.place(int(self.winId()), False)
+            self.layer_timer = QTimer(self)
+            self.layer_timer.setInterval(250)
+            self.layer_timer.timeout.connect(self.check_desktop_layer)
+            self.layer_timer.start()
+
+    def check_desktop_layer(self):
+        """Windows: stay visible through "Show desktop" (Win+D) without ever covering your apps."""
+        z = self.zorder
+        hwnd = int(self.winId())
+        try:
+            fg = z.foreground()
+            fg_desktop = z.is_desktop(fg)
+            above = fg_desktop and not self.raised and z.above(hwnd, fg)
+            want = desktop_layer_state(self.raised, fg_desktop, above, bool(fg) and z.is_ours(fg))
+            if want != self.raised:
+                self.raised = want
+                z.place(hwnd, want)
+        except Exception as err:
+            print(f"desktop layer: {err}", file=sys.stderr)
+            self.layer_timer.stop()
 
     def check_reload(self):
         stamp = (_mtime(SETTINGS_FILE), _mtime(LIVE_PALETTE_FILE))
@@ -8251,7 +8335,8 @@ class PanelsTab(QWidget):
                     ("refresh", "int", "Refresh every", (5, 180, " min"))],
         "calendar": [("week_start", "combo", "Week starts on", [("sunday", "Sunday"), ("monday", "Monday")])],
         "countdown": [("event", "text", "Counting down to", None), ("target", "datetime", "Date and time", None)],
-        "drives": [("mounts", "text", "Mount points (blank = all)", None)],
+        "drives": [("mounts", "text", "Drives, e.g. C:, D: (blank = all)" if IS_WINDOWS
+                    else "Mount points (blank = all)", None)],
         "network": [("graph_seconds", "int", "History", (10, 600, " s")),
                     ("graph_height", "int", "Graph height", (30, 300, " px"))],
         "notes": [("notes_file", "file", "Notes file", None), ("max_lines", "int", "Show up to", (1, 60, " lines"))],
@@ -9807,6 +9892,8 @@ def run_selftest(report_path=None):
                         for k, d, i in (("panel", PANELS_DIR, panel["id"]), ("visualizer", VIS_DIR, vis["id"]))}
                 if not all(alive.values()):
                     raise RuntimeError(f"not running: {alive}; logs: {logs}")
+                if "desktop layer:" in logs["panel"] + logs["visualizer"]:
+                    raise RuntimeError(f"desktop layer error; logs: {logs}")
                 return {"pids": alive, "logs": logs}
             finally:
                 stop_panel(panel["id"])
@@ -9816,6 +9903,44 @@ def run_selftest(report_path=None):
                 s["visualizers"] = [x for x in s["visualizers"] if x["id"] != vis["id"]]
                 save_settings(s)
         check("panel and visualizer processes start", child_processes)
+
+        def show_desktop():
+            """Press Win+D twice and watch a desktop window get lifted and dropped back."""
+            import ctypes
+            w = DesktopWindow("selftest", click_through=True)
+            w.resize(120, 120)
+            w.show()
+
+            def wait(sec):
+                end = time.monotonic() + sec
+                while time.monotonic() < end:
+                    app.processEvents()
+                    time.sleep(0.02)
+
+            def win_d():
+                kb = ctypes.windll.user32.keybd_event
+                kb(0x5B, 0, 0, 0)
+                kb(0x44, 0, 0, 0)
+                kb(0x44, 0, 2, 0)
+                kb(0x5B, 0, 2, 0)
+            wait(1)
+            if not getattr(w, "zorder", None):
+                raise RuntimeError("desktop layer handling didn't start")
+            fg0 = w.zorder.class_name(w.zorder.foreground())
+            win_d()
+            wait(2)
+            fg1 = w.zorder.class_name(w.zorder.foreground())
+            lifted = w.raised
+            win_d()
+            wait(2)
+            dropped = not w.raised
+            w.close()
+            result = {"foreground before": fg0, "after Win+D": fg1, "lifted": lifted, "dropped after": dropped}
+            if not (lifted and dropped):
+                raise RuntimeError(result)
+            return result
+        if IS_WINDOWS:
+            check("Win+D keeps panels visible", show_desktop, required=False)
     failed = [c["name"] for c in checks if c["required"] and not c["ok"]]
     report = {"version": VERSION, "platform": sys.platform, "frozen": IS_FROZEN, "python": sys.version.split()[0],
               "qt_platform": app.platformName(), "checks": checks, "failed": failed}

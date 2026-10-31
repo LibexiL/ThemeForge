@@ -528,3 +528,33 @@ def test_thread_safety_of_worker_stop(tf, fake_winrt, monkeypatch):
     w.stop()
     w.thread.join(2)
     assert not w.thread.is_alive() and threading.active_count() >= 1
+
+
+# ── 2.5.1: Win+D, drives, CPU temperature ──────────────────────────
+
+def test_show_desktop_lifts_panels_and_drops_them_back(tf):
+    st = tf.desktop_layer_state
+    assert not st(False, False, False, False)            # normal: stay at the bottom
+    assert not st(False, True, False, False)             # clicking the desktop doesn't raise them
+    assert st(False, True, True, False)                  # Win+D put the desktop above us → lift
+    assert st(True, True, False, False)                  # stay lifted while the desktop is in front
+    assert st(True, False, False, True)                  # …or while our own menu is open
+    assert not st(True, False, False, False)             # another app in front → back to the bottom
+
+
+def test_windows_drives_skip_usb_sticks_unless_listed(tf, monkeypatch):
+    parts = [types.SimpleNamespace(mountpoint=m, opts=o, fstype=f) for m, o, f in (
+        ("C:\\", "rw,fixed", "NTFS"), ("D:\\", "rw,fixed", "NTFS"), ("E:\\", "ro,removable", "FAT32"),
+        ("F:\\", "rw,removable", "FAT32"), ("G:\\", "ro,cdrom", "UDF"), ("H:\\", "cdrom", ""))]
+    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(disk_partitions=lambda all=False: parts))
+    monkeypatch.setattr(tf.shutil, "disk_usage", lambda m: types.SimpleNamespace(used=1, total=2))
+    monkeypatch.setattr(tf, "win_volume_label", lambda root: "")
+    monkeypatch.setenv("SystemDrive", "C:")
+    assert [d["label"] for d in tf._win_drives([])] == ["System (C:)", "Local Disk (D:)"]
+    assert [d["mount"] for d in tf._win_drives(["F:", "c:\\"])] == ["C:\\", "F:\\"]
+
+
+def test_cpu_temperature_hidden_on_windows(tf):
+    names = [m for m, _ in tf.SYSTEM_METRICS]
+    assert ("cputemp" in names) != (sys.platform == "win32")
+    assert all(m in names for m in tf.panel_template("system")["metrics"])

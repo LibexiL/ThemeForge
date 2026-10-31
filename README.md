@@ -151,7 +151,7 @@ Neither needs Python. The installed version updates itself: when a new release i
 
 ### What works differently
 
-- **Panels and visualizers** work as on Linux. They are attached to the desktop and kept out of the taskbar and Alt+Tab.
+- **Panels and visualizers** work as on Linux. They stay visible when you press Win+D and are kept out of the taskbar and Alt+Tab.
 - **Visualizers** listen to whatever your speakers or headphones are playing. You don't need cava or anything else.
 - **The now playing card and album-art mode** read the Windows media controls (the ones in the volume flyout). That covers Spotify, browsers, the Media Player app and most other players.
 - **The games launcher** shows `.lnk`, `.url` and `.exe` files, so Steam and Epic desktop shortcuts work. "Copy game shortcuts from my Desktop" also picks up shortcuts on the shared Public desktop.
