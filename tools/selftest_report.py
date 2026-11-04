@@ -16,6 +16,7 @@ def esc(text):
 
 
 def main(paths):
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")   # check names contain ✓ and ♪
     bad = False
     for p in paths:
         path = Path(p)
