@@ -18,6 +18,7 @@ yourself (rendered with conky) and desktop music visualizers (audio from cava).
 import colorsys
 import copy
 import hashlib
+import html
 import json
 import math
 import os
@@ -49,7 +50,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
                                QScrollArea, QSpinBox, QSplitter, QTabWidget,
                                QToolButton, QVBoxLayout, QWidget)
 
-VERSION = "2.5.1"
+VERSION = "2.6.0"
 # GitHub "owner/repo" the auto-updater checks for new releases
 GITHUB_REPO = "LibexiL/ThemeForge"
 IS_WINDOWS = sys.platform == "win32"
@@ -6015,6 +6016,7 @@ def default_settings():
             "profiles": [],
             "current_profile": "",
             "album": copy.deepcopy(ALBUM_DEFAULTS),
+            "wpe": dict(WPE_DEFAULTS),
             "tray": False,
             "icon_theme": "",
             "papirus_folders": True,
@@ -6035,6 +6037,7 @@ def load_settings():
         targets.update(data.get("targets", {}))
         album.update(data.get("album") or {})
         s["targets"], s["album"] = targets, album
+        s["wpe"] = {**WPE_DEFAULTS, **(data.get("wpe") or {})}
         if not valid_palette(s["palette"]):
             s["palette"] = copy.deepcopy(PRESETS["Catppuccin Mocha"])
     except FileNotFoundError:
@@ -6062,7 +6065,7 @@ def save_settings(s):
 
 
 def service_wanted(s):
-    return bool(s.get("tray") or s["album"].get("enabled"))
+    return bool(s.get("tray") or s["album"].get("enabled") or (s.get("wpe") or {}).get("enabled"))
 
 
 WIN_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -6346,6 +6349,244 @@ def palette_icon(p, size=64):
     return QIcon(pm)
 
 
+# ── Wallpaper Engine ───────────────────────────────────────────────
+
+WPE_DEFAULTS = {"enabled": False, "monitor": "", "light": False, "config": "", "last": ""}
+WPE_STATUS_FILE = CFG_DIR / "wallpaper-engine-status.json"
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp", ".tif", ".tiff")
+KDE_APPLETSRC = HOME / ".config" / "plasma-org.kde.plasma.desktop-appletsrc"
+
+
+def steam_libraries():
+    """Every Steam library folder on this machine (the main install first)."""
+    roots = []
+    if IS_WINDOWS:
+        try:
+            v = win_reg_get(r"Software\Valve\Steam", "SteamPath")
+            if v:
+                roots.append(Path(v[1]))
+        except OSError:
+            pass
+        for env in ("ProgramFiles(x86)", "ProgramFiles"):
+            if os.environ.get(env):
+                roots.append(Path(os.environ[env]) / "Steam")
+    else:
+        roots += [HOME / ".steam" / "steam", HOME / ".local" / "share" / "Steam",
+                  HOME / ".var" / "app" / "com.valvesoftware.Steam" / ".local" / "share" / "Steam"]
+    libs, seen = [], set()
+
+    def add(p):
+        key = os.path.normcase(os.path.realpath(str(p)))
+        if key not in seen and Path(p).is_dir():
+            seen.add(key)
+            libs.append(Path(p))
+    for r in roots:
+        add(r)
+        try:
+            text = read_text_any(r / "steamapps" / "libraryfolders.vdf")
+        except OSError:
+            continue
+        for m in re.finditer(r'"path"\s+"([^"]+)"', text):
+            add(m.group(1).replace("\\\\", "\\"))
+    return libs
+
+
+def find_wpe_config(s=None):
+    """Wallpaper Engine's config.json (Windows) or Plasma's applet config when the Wallpaper Engine for KDE
+    plugin is in use (Linux). None when there's neither."""
+    custom = ((s or {}).get("wpe") or {}).get("config")
+    if custom and Path(custom).is_file():
+        return Path(custom)
+    if IS_WINDOWS:
+        for lib in steam_libraries():
+            f = lib / "steamapps" / "common" / "wallpaper_engine" / "config.json"
+            if f.is_file():
+                return f
+        return None
+    try:
+        if "WallpaperSource=" in KDE_APPLETSRC.read_text(encoding="utf-8", errors="replace"):
+            return KDE_APPLETSRC
+    except OSError:
+        pass
+    return None
+
+
+def _find_dict(obj, key):
+    """Depth-first search for the first dict stored under `key`."""
+    if isinstance(obj, dict):
+        if isinstance(obj.get(key), dict):
+            return obj[key]
+        for v in obj.values():
+            found = _find_dict(v, key)
+            if found is not None:
+                return found
+    elif isinstance(obj, list):
+        for v in obj:
+            found = _find_dict(v, key)
+            if found is not None:
+                return found
+    return None
+
+
+def wpe_selected(path):
+    """{monitor: wallpaper file} in the order Wallpaper Engine lists them."""
+    text = read_text_any(path)
+    if Path(path).suffix.lower() != ".json":            # Plasma: one WallpaperSource per desktop/screen
+        out = {}
+        for i, m in enumerate(re.finditer(r"^WallpaperSource=(.+)$", text, re.M)):
+            src = m.group(1).strip()
+            if src.startswith("file://"):
+                from urllib.parse import unquote, urlparse
+                src = unquote(urlparse(src).path)
+            out[f"Screen{i}"] = src
+        return out
+    sel = _find_dict(json.loads(text), "selectedwallpapers") or {}
+    return {mon: e["file"] for mon, e in sel.items() if isinstance(e, dict) and e.get("file")}
+
+
+def wpe_monitor_label(key, i):
+    m = re.search(r"DISPLAY#([^#]+)#", key)
+    return f"Monitor {i + 1}" + (f" ({m.group(1)})" if m else "")
+
+
+def wpe_pick(selected, monitor=""):
+    """(monitor, file) to follow: the chosen monitor if it's there, else the first one."""
+    if monitor in selected:
+        return monitor, selected[monitor]
+    for mon, f in selected.items():
+        return mon, f
+    return None, None
+
+
+def wpe_wallpaper_info(file):
+    """Title, type and the best image to take colors from for a wallpaper file."""
+    p = Path(file)
+    folder = p.parent if p.suffix else p
+    try:
+        proj = json.loads(read_text_any(folder / "project.json"))
+    except (OSError, ValueError):
+        proj = {}
+    cands = []
+    if p.suffix.lower() in IMAGE_EXTS:
+        cands.append(p)                                   # an image wallpaper: use it at full size
+    if proj.get("preview"):
+        cands.append(folder / proj["preview"])
+    cands += [folder / f"preview{ext}" for ext in (".jpg", ".png", ".gif", ".webp")]
+    image = next((c for c in cands if c.is_file()), None)
+    return {"title": str(proj.get("title") or folder.name), "type": str(proj.get("type") or "").lower(),
+            "image": image, "folder": folder}
+
+
+class WallpaperEngineWatcher(QObject):
+    """Rebuilds the palette whenever the Wallpaper Engine wallpaper changes and applies it."""
+    finished = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.enabled = False
+        self.conf = dict(WPE_DEFAULTS)
+        self.path = None
+        self.path_checked = 0.0
+        self.stamp = None
+        self.busy = False
+        self.again = False
+        self.timer = QTimer(self)
+        self.timer.setInterval(3000)
+        self.timer.timeout.connect(self.check)
+        self.finished.connect(self.on_finished)
+
+    def configure(self, s):
+        conf = dict(s.get("wpe") or WPE_DEFAULTS)
+        on = bool(conf.get("enabled"))
+        changed = {k: conf.get(k) for k in ("monitor", "light", "config", "last")} != \
+            {k: self.conf.get(k) for k in ("monitor", "light", "config", "last")}
+        self.conf = conf
+        if on != self.enabled:
+            self.enabled = on
+            if on:
+                self.timer.start()
+            else:
+                self.timer.stop()
+        if on and changed:
+            self.stamp = None                           # settings changed: look again now
+            self.check()
+
+    def check(self):
+        if not self.enabled:
+            return
+        now = time.monotonic()
+        if self.path is None or self.conf.get("config") or now - self.path_checked > 60:
+            self.path, self.path_checked = find_wpe_config({"wpe": self.conf}), now
+        if self.path is None:
+            write_wpe_status({"state": "missing"})
+            return
+        stamp = (str(self.path), _mtime(self.path), self.conf.get("monitor"), self.conf.get("light"),
+                 self.conf.get("last"))
+        if stamp == self.stamp:
+            return
+        self.stamp = stamp
+        if self.busy:
+            self.again = True
+            return
+        self.busy = True
+        threading.Thread(target=self.work, args=(self.path, dict(self.conf)), daemon=True).start()
+
+    def work(self, path, conf):
+        try:
+            monitor, file = wpe_pick(wpe_selected(path), conf.get("monitor", ""))
+            if not file:
+                write_wpe_status({"state": "none", "config": str(path)})
+                return
+            if file == conf.get("last"):
+                return                                    # already matched (e.g. after a restart)
+            info = wpe_wallpaper_info(file)
+            if not info["image"]:
+                write_wpe_status({"state": "error", "config": str(path), "title": info["title"],
+                                  "message": "this wallpaper has no preview image to take colors from"})
+                return
+            p = palette_from_wallpaper(info["image"], conf.get("light", False))
+            p["name"] = f"Wallpaper Engine: {info['title']}"
+            with APPLY_LOCK:
+                s = load_settings()
+                s["palette"] = p
+                s["wpe"]["last"] = file
+                album_on = s["album"].get("enabled") and album_active()
+                if not album_on:                          # album-art mode goes back to this palette later
+                    run = dict(s, targets=dict(s["targets"], wallpaper=False))   # Wallpaper Engine draws it
+                    apply_all(run, print)
+                    s.update({k: v for k, v in run.items() if k != "targets"})
+                save_settings(s)
+            write_wpe_status({"state": "on", "config": str(path), "title": info["title"], "monitor": monitor,
+                              "type": info["type"], "palette": p, "time": time.time()})
+        except Exception as e:
+            print(f"Wallpaper Engine: {e}", file=sys.stderr)
+            write_wpe_status({"state": "error", "config": str(path), "message": str(e)})
+        finally:
+            self.finished.emit()
+
+    def on_finished(self):
+        self.busy = False
+        if self.again:
+            self.again = False
+            self.stamp = None
+            self.check()
+
+
+def write_wpe_status(st):
+    try:
+        WPE_STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        WPE_STATUS_FILE.write_text(json.dumps(st), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def album_active():
+    try:
+        return json.loads(ALBUM_STATUS_FILE.read_text(encoding="utf-8")).get("state") == "on"
+    except (OSError, ValueError):
+        return False
+
+
 class AlbumArtWatcher(QObject):
     """Recolors the album-art targets whenever a new cover starts playing."""
     finished = Signal()
@@ -6441,6 +6682,7 @@ class Service(QObject):
         self.menu = None
         self.stamp = None
         self.album = AlbumArtWatcher(self)
+        self.wpe = WallpaperEngineWatcher(self)
         self.timer = QTimer(self)
         self.timer.setInterval(1500)
         self.timer.timeout.connect(self.sync)
@@ -6455,9 +6697,11 @@ class Service(QObject):
         s = load_settings()
         if not service_wanted(s):
             self.album.set_enabled(False)
-            QTimer.singleShot(3000 if self.album.busy else 0, self.app.quit)
+            self.wpe.configure({"wpe": dict(WPE_DEFAULTS)})
+            QTimer.singleShot(3000 if self.album.busy or self.wpe.busy else 0, self.app.quit)
             return
         self.album.set_enabled(bool(s["album"].get("enabled")))
+        self.wpe.configure(s)
         if s.get("tray") and not QSystemTrayIcon.isSystemTrayAvailable():
             self.stamp = None           # the panel's tray isn't up yet (e.g. right after login) - retry
             return
@@ -6504,6 +6748,10 @@ class Service(QObject):
         a.setCheckable(True)
         a.setChecked(bool(s["album"].get("enabled")))
         a.toggled.connect(self.toggle_album)
+        a = m.addAction("Match Wallpaper Engine")
+        a.setCheckable(True)
+        a.setChecked(bool(s["wpe"].get("enabled")))
+        a.toggled.connect(self.toggle_wpe)
         m.addSeparator()
         m.addAction("Apply my theme again").triggered.connect(
             lambda *_: self.in_background(lambda: apply_all(load_settings(), print)))
@@ -6552,6 +6800,13 @@ class Service(QObject):
     def toggle_album(on):
         s = load_settings()
         s["album"]["enabled"] = on
+        save_settings(s)
+        update_autostart(s)
+
+    @staticmethod
+    def toggle_wpe(on):
+        s = load_settings()
+        s["wpe"].update(enabled=on, last="")
         save_settings(s)
         update_autostart(s)
 
@@ -8843,6 +9098,43 @@ class ProfilesTab(QWidget):
         v.addWidget(self.album_strip)
         v.addStretch()
         rv.addWidget(gb, 1)
+
+        gb = QGroupBox("Wallpaper Engine")
+        v = QVBoxLayout(gb)
+        self.wpe_cb = QCheckBox("Match my Wallpaper Engine wallpaper")
+        self.wpe_cb.setStyleSheet("font-weight: bold;")
+        self.wpe_cb.toggled.connect(lambda on: self.set_wpe("enabled", on))
+        v.addWidget(self.wpe_cb)
+        v.addWidget(hint_label(
+            "Whenever you pick a new wallpaper in Wallpaper Engine, ThemeForge builds a palette from it and applies "
+            "it to everything ticked on the Apply tab. Your wallpaper itself is left to Wallpaper Engine. Video and "
+            "scene wallpapers use their preview image." if IS_WINDOWS else
+            "Works with the Wallpaper Engine for KDE plugin: when you pick a new wallpaper there, ThemeForge "
+            "builds a palette from it and applies it to everything ticked on the Apply tab."))
+        f = QFormLayout()
+        self.wpe_monitor = QComboBox()
+        self.wpe_monitor.currentIndexChanged.connect(
+            lambda i: self.set_wpe("monitor", self.wpe_monitor.itemData(i) or ""))
+        f.addRow("Follow", self.wpe_monitor)
+        v.addLayout(f)
+        self.wpe_light = QCheckBox("Use light palettes")
+        self.wpe_light.toggled.connect(lambda on: self.set_wpe("light", on))
+        v.addWidget(self.wpe_light)
+        self.wpe_status = QLabel("Off")
+        self.wpe_status.setWordWrap(True)
+        v.addWidget(self.wpe_status)
+        self.wpe_strip = SwatchStrip()
+        v.addWidget(self.wpe_strip)
+        row = QHBoxLayout()
+        b = QPushButton("Match it again now")
+        b.clicked.connect(lambda: self.set_wpe("last", ""))
+        row.addWidget(b)
+        self.wpe_pick_btn = QPushButton("Choose config file…")
+        self.wpe_pick_btn.clicked.connect(self.pick_wpe_config)
+        row.addWidget(self.wpe_pick_btn)
+        row.addStretch()
+        v.addLayout(row)
+        rv.addWidget(gb)
         split.addWidget(right)
         split.setSizes([620, 620])
 
@@ -8873,6 +9165,10 @@ class ProfilesTab(QWidget):
         self.album_light.setChecked(bool(al.get("light")))
         self.album_revert.setChecked(bool(al.get("revert", True)))
         self.tray_cb.setChecked(bool(self.s.get("tray")))
+        wpe = self.s["wpe"]
+        self.wpe_cb.setChecked(bool(wpe.get("enabled")))
+        self.wpe_light.setChecked(bool(wpe.get("light")))
+        self.fill_wpe_monitors()
         self.loading = False
         self.refresh_album_status()
 
@@ -8971,6 +9267,76 @@ class ProfilesTab(QWidget):
         self.s["album"]["targets"] = t
         self.service_settings_changed()
 
+    def fill_wpe_monitors(self):
+        box, want = self.wpe_monitor, self.s["wpe"].get("monitor", "")
+        box.blockSignals(True)
+        box.clear()
+        box.addItem("First monitor", "")
+        path = find_wpe_config(self.s)
+        try:
+            selected = wpe_selected(path) if path else {}
+        except Exception:
+            selected = {}
+        for i, mon in enumerate(selected):
+            title = wpe_wallpaper_info(selected[mon])["title"]
+            box.addItem(f"{wpe_monitor_label(mon, i)} - {title}", mon)
+        if want and box.findData(want) < 0:
+            box.addItem(wpe_monitor_label(want, box.count() - 1) + " (not connected)", want)
+        box.setCurrentIndex(max(0, box.findData(want)))
+        box.blockSignals(False)
+        self.wpe_pick_btn.setVisible(path is None or bool(self.s["wpe"].get("config")))
+
+    def set_wpe(self, key, value):
+        if self.loading:
+            return
+        self.s["wpe"][key] = value
+        if key != "last":
+            self.s["wpe"]["last"] = ""                # re-match with the new setting
+        if key == "enabled" and value and not find_wpe_config(self.s):
+            QMessageBox.information(
+                self, "Wallpaper Engine not found",
+                "ThemeForge couldn't find Wallpaper Engine's config.json in your Steam libraries. Click "
+                "“Choose config file…” and pick it from the folder Wallpaper Engine is installed in "
+                "(…\\steamapps\\common\\wallpaper_engine)." if IS_WINDOWS else
+                "ThemeForge couldn't find a desktop using the Wallpaper Engine for KDE plugin. Set one up in "
+                "Desktop and Wallpaper settings, then try again.")
+        self.service_settings_changed()
+        self.refresh_wpe_status()
+
+    def pick_wpe_config(self):
+        start = next((str(lib / "steamapps" / "common") for lib in steam_libraries()), str(HOME))
+        path, _ = QFileDialog.getOpenFileName(self, "Wallpaper Engine's config.json", start, "config.json (*.json)")
+        if path:
+            self.s["wpe"]["config"] = path
+            self.set_wpe("config", path)
+            self.fill_wpe_monitors()
+
+    def refresh_wpe_status(self):
+        wpe = self.s["wpe"]
+        if not wpe.get("enabled"):
+            self.wpe_status.setText("Off")
+            self.wpe_strip.set_colors([])
+            return
+        try:
+            st = json.loads(WPE_STATUS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            st = {}
+        state = st.get("state")
+        if not tf_pids("--service"):
+            self.wpe_status.setText("Starting…")
+        elif state == "on":
+            self.wpe_status.setText(f"Matching <b>{html.escape(st.get('title') or 'your wallpaper')}</b>")
+            self.wpe_strip.set_colors(palette_strip(st["palette"]) if valid_palette(st.get("palette", {})) else [])
+            return
+        elif state == "missing":
+            self.wpe_status.setText("Wallpaper Engine not found - choose its config.json.")
+        elif state == "error":
+            self.wpe_status.setText(f"Couldn't match {html.escape(st.get('title') or 'the wallpaper')}: "
+                                    f"{html.escape(st.get('message', ''))}")
+        else:
+            self.wpe_status.setText("Waiting for Wallpaper Engine…")
+        self.wpe_strip.set_colors([])
+
     def toggle_tray(self, on):
         if self.loading:
             return
@@ -9013,6 +9379,7 @@ class ProfilesTab(QWidget):
     def refresh_album_status(self):
         if not self.isVisible():
             return
+        self.refresh_wpe_status()
         al = self.s["album"]
         if not al.get("enabled"):
             self.album_status.setText("Off")
@@ -9859,6 +10226,21 @@ def run_selftest(report_path=None):
     check("panels and visualizers paint", paint_all)
     check("theme file writers", writers)
     check("process lookup", processes)
+
+    def image_formats():
+        from PySide6.QtGui import QImageReader
+        have = {bytes(f).decode() for f in QImageReader.supportedImageFormats()}
+        missing = {"gif", "jpeg", "png", "webp"} - have
+        if missing:
+            raise RuntimeError(f"can't read {sorted(missing)}")
+        return sorted(have)
+    check("image formats for wallpapers and album art", image_formats)
+    def wpe_install():
+        path = find_wpe_config(load_settings())
+        if not path:
+            raise RuntimeError("not found")
+        return {"config": str(path), "selected": wpe_selected(path)}
+    check("Wallpaper Engine install", wpe_install, required=False)
     check("media source available", lambda: media_available() or (_ for _ in ()).throw(RuntimeError("no")),
           required=IS_WINDOWS)
     check("audio capture available", lambda: audio_available() or (_ for _ in ()).throw(RuntimeError("no")),

@@ -93,6 +93,7 @@ Audio comes from cava, so anything PipeWire or PulseAudio plays drives them.
 
 - **Profiles** save your whole setup: palette, wallpaper, targets, and which widgets, visualizers and panels are running. Switch between "Gaming" and "Chill" in one click, from the tray icon, a keyboard shortcut or the command line.
 - **Album-art mode** recolors your desktop (you pick which parts) to match the cover of the song that's playing. It works with any player playerctl can see: Spotify, browsers, mpv, Strawberry, Elisa and so on. It goes back to your own theme when the music stops.
+- **Wallpaper Engine** (Windows, or the Wallpaper Engine for KDE plugin on Linux): tick "Match my Wallpaper Engine wallpaper" and every wallpaper you pick recolors your desktop. With several monitors, choose which one to follow. Video and scene wallpapers use their preview image.
 - **Tray icon** gives quick access to profiles, themes and album-art mode. Middle-click it to switch to the next profile.
 
 ### Auto-updates

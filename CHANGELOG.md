@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.6.0] - 2026-11-04
+
+### Added
+- **Match your Wallpaper Engine wallpaper** (Profiles tab, or from the tray menu).
+  - When you pick a new wallpaper in Wallpaper Engine, ThemeForge builds a palette from it and applies it to everything you've ticked on the Apply tab. The wallpaper itself is left to Wallpaper Engine.
+  - Finds Wallpaper Engine in any of your Steam libraries, or you can choose its `config.json` yourself.
+  - With more than one monitor, you choose which monitor's wallpaper to follow.
+  - Image wallpapers are read at full size. Video, scene and web wallpapers use their preview image.
+  - Optional light palettes. If album-art mode is matching a song, the new palette waits until the music stops.
+  - On Linux, it works with the Wallpaper Engine for KDE plugin.
+- The self-test checks that GIF, JPEG, PNG and WebP images can be read, and reports whether Wallpaper Engine was found.
+
 ## [2.5.1] - 2026-10-30
 
 ### Fixed
