@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.6.1] - 2026-11-04
+
+### Fixed
+- **Windows:** Wallpaper Engine matching, album-art mode and tray actions failed with "'charmap' codec can't encode character". Background processes now always write their logs as UTF-8.
+- The self-test checks that log output can contain symbols like ✓ and ♪.
+
 ## [2.6.0] - 2026-11-04
 
 ### Added

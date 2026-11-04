@@ -179,3 +179,19 @@ def test_missing_install_and_settings(tf, home, monkeypatch):
     assert s["wpe"] == tf.WPE_DEFAULTS and not tf.service_wanted(s)
     s["wpe"]["enabled"] = True
     assert tf.service_wanted(s)
+
+
+def test_print_survives_a_non_utf8_log(tf, monkeypatch):
+    """Windows gives a process whose output goes to a file the ANSI code page (cp1252)."""
+    import io
+    import sys
+    raw = io.BytesIO()
+    stream = io.TextIOWrapper(raw, encoding="cp1252")
+    monkeypatch.setattr(sys, "stdout", stream)
+    monkeypatch.setattr(sys, "stderr", None)
+    tf.fix_stdio()
+    print("✓ Windows Terminal ✗ → ♪")
+    sys.stdout.flush()
+    assert raw.getvalue().decode("utf-8").startswith("✓ Windows Terminal ✗ → ♪")
+    assert sys.stderr is not None
+    sys.stderr.close()

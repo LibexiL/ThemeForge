@@ -50,7 +50,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
                                QScrollArea, QSpinBox, QSplitter, QTabWidget,
                                QToolButton, QVBoxLayout, QWidget)
 
-VERSION = "2.6.0"
+VERSION = "2.6.1"
 # GitHub "owner/repo" the auto-updater checks for new releases
 GITHUB_REPO = "LibexiL/ThemeForge"
 IS_WINDOWS = sys.platform == "win32"
@@ -10218,6 +10218,11 @@ def run_selftest(report_path=None):
     def processes():
         return {"self": self_command("--panel", "x"), "running": len(_process_argvs())}
 
+    def symbols():
+        for stream in (sys.stdout, sys.stderr):
+            print("✓ ✗ → ♪ — ThemeForge", file=stream, flush=True)
+        return sys.stdout.encoding
+    check("log output handles ✓ ✗ → ♪", symbols)
     check("bundled libraries import", imports)
     check("settings load and save", settings)
     check("system stats", stats)
@@ -10339,11 +10344,24 @@ def importlib_ok(name):
     return importlib.util.find_spec(name) is not None
 
 
+def fix_stdio():
+    """Make print() safe everywhere. A windowed Windows build has no console at all, and a background process
+    whose output goes to a log file gets the ANSI code page there, which can't encode ✓, ✗, → or ♪."""
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name)
+        if stream is None:
+            setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))
+        elif (getattr(stream, "encoding", "") or "").lower().replace("-", "") != "utf8" \
+                and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+            except (ValueError, OSError):
+                pass
+
+
 def main():
     args = sys.argv[1:]
-    for name in ("stdout", "stderr"):          # a windowed Windows build has no console to print to
-        if getattr(sys, name) is None:
-            setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))
+    fix_stdio()
     if "--version" in args:
         print(f"ThemeForge {VERSION}")
         return
