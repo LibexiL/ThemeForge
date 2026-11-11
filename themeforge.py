@@ -3855,9 +3855,11 @@ def _proc_name(p):
 
 def process_roots(names, procs=None):
     """PIDs of the top process of every running app called one of `names` (its children are captured with it)."""
-    import psutil
+    if procs is None:
+        import psutil
+        procs = psutil.process_iter(["pid", "name"])
     want = set(names)
-    procs = list(procs if procs is not None else psutil.process_iter(["pid", "name"]))
+    procs = list(procs)
     by_pid = {p.pid: p for p in procs}
     roots = []
     for p in procs:
@@ -3985,6 +3987,19 @@ def _session_pids():
 # ── Windows process loopback (record only some apps, or all but one) ─
 
 _PLB = {}
+
+
+def com_init_mta():
+    """Join this thread to COM's multithreaded apartment, which per-app recording needs. comtypes sets COM up on
+    whichever thread first imports it, so tell it which mode first; a thread already set up (e.g. Qt's) is fine."""
+    if "comtypes" not in sys.modules:
+        sys.coinit_flags = 0                         # COINIT_MULTITHREADED
+    import comtypes
+    try:
+        comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
+    except OSError as e:
+        if (getattr(e, "winerror", None) or 0) & 0xFFFFFFFF != 0x80010106:     # RPC_E_CHANGED_MODE
+            raise
 
 
 def _process_loopback_api():
@@ -4149,8 +4164,7 @@ class ProcessLoopback:
 
 def probe_process_loopback():
     """Self-test: can this PC record a single app's audio? (Records this process for a moment.)"""
-    import comtypes
-    comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
+    com_init_mta()
     s = ProcessLoopback(os.getpid())
     try:
         time.sleep(0.2)
@@ -4259,11 +4273,10 @@ class LoopbackFeed(QObject):
     def _capture_apps(self, conf, stop_ev):
         """Only some apps, or everything except some: one process-loopback recording per app, mixed together.
         Re-checks every few seconds, so apps that start or quit are picked up."""
-        import comtypes
         import numpy as np
         import psutil
         bars, framerate, smoothing, stereo, source = conf
-        comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
+        com_init_mta()
         ch = ProcessLoopback.CHANNELS
         spec = Spectrum(bars, ProcessLoopback.RATE, stereo, smoothing)
         hop = max(64, ProcessLoopback.RATE // max(10, framerate))
