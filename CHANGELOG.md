@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.8.0] - 2026-11-10
+
+### Added
+- **Snapping while moving panels.** Drag a panel near another one and it snaps into line.
+  - Matching left, right, top or bottom edges, or centers.
+  - Side by side with an even 16 px gap, or touching.
+  - The screen's edges and center.
+  - Accent-colored guide lines show what it's lining up with.
+  - Hold **Shift** to place a panel freely.
+  - Snapped positions are saved exactly, not rounded to the 4 px grid, so lined-up panels stay lined up.
+
 ## [2.7.0] - 2026-11-10
 
 ### Added

@@ -50,7 +50,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
                                QScrollArea, QSpinBox, QSplitter, QTabWidget,
                                QToolButton, QVBoxLayout, QWidget)
 
-VERSION = "2.7.0"
+VERSION = "2.8.0"
 # GitHub "owner/repo" the auto-updater checks for new releases
 GITHUB_REPO = "LibexiL/ThemeForge"
 IS_WINDOWS = sys.platform == "win32"
@@ -1951,7 +1951,7 @@ def _paint_panel(qp, origin, panel, p, state):
         qp.drawPath(body)
         qp.setFont(_font(9, True))
         qp.setPen(QColor(fg))
-        qp.drawText(full, Qt.AlignCenter, "Drag to move · click to drop")
+        qp.drawText(full, Qt.AlignCenter | Qt.TextWordWrap, "Drag to move · click to drop\nHold Shift to skip snapping")
     qp.restore()
     return full
 
@@ -4605,6 +4605,128 @@ def update_peaks(peaks, vals, dt, hold=0.35, fall=0.9):
     return out
 
 
+# ── snapping while moving a panel ──────────────────────────────────
+
+SNAP_DIST = 10        # px: how close an edge has to come before it snaps
+SNAP_GAP = 16         # px: the even gap left between panels placed side by side
+
+
+def snap_move(r, others, screen, dist=SNAP_DIST, gap=SNAP_GAP):
+    """How far to nudge a panel being dragged (rect r) so it lines up with the other panels and the screen.
+    Returns (dx, dy, guides); each guide is ("v", x, y1, y2) or ("h", y, x1, x2), for the moved rect."""
+    best = {"x": None, "y": None}
+
+    def consider(axis, d, line, ref, kind):
+        cur = best[axis]
+        if abs(d) <= dist and (cur is None or abs(d) < cur[0] - 1e-6):
+            best[axis] = (abs(d), d, line, ref, kind)
+
+    def lines_x(q):
+        return q.left(), q.center().x(), q.right()
+
+    def lines_y(q):
+        return q.top(), q.center().y(), q.bottom()
+    for mine, target in zip(lines_x(r), lines_x(screen)):
+        consider("x", target - mine, target, screen, "screen")
+    for mine, target in zip(lines_y(r), lines_y(screen)):
+        consider("y", target - mine, target, screen, "screen")
+    for o in others:
+        for mine, target in zip(lines_x(r), lines_x(o)):          # line up left, centre or right edges
+            consider("x", target - mine, target, o, "align")
+        for mine, target in zip(lines_y(r), lines_y(o)):
+            consider("y", target - mine, target, o, "align")
+        near_y = r.top() < o.bottom() + 3 * gap and o.top() < r.bottom() + 3 * gap
+        near_x = r.left() < o.right() + 3 * gap and o.left() < r.right() + 3 * gap
+        if near_y:                                                 # side by side, with an even gap or touching
+            for g in (gap, 0):
+                consider("x", o.right() + g - r.left(), o.right() + g / 2, o, "beside")
+                consider("x", o.left() - g - r.right(), o.left() - g / 2, o, "beside")
+        if near_x:
+            for g in (gap, 0):
+                consider("y", o.bottom() + g - r.top(), o.bottom() + g / 2, o, "beside")
+                consider("y", o.top() - g - r.bottom(), o.top() - g / 2, o, "beside")
+    dx = best["x"][1] if best["x"] else 0.0
+    dy = best["y"][1] if best["y"] else 0.0
+    moved = r.translated(dx, dy)
+    guides = []
+    if best["x"]:
+        _, _, x, ref, kind = best["x"]
+        if kind == "screen":
+            guides.append(("v", x, ref.top(), ref.bottom()))
+        else:
+            guides.append(("v", x, min(moved.top(), ref.top()), max(moved.bottom(), ref.bottom())))
+    if best["y"]:
+        _, _, y, ref, kind = best["y"]
+        if kind == "screen":
+            guides.append(("h", y, ref.left(), ref.right()))
+        else:
+            guides.append(("h", y, min(moved.left(), ref.left()), max(moved.right(), ref.right())))
+    return dx, dy, guides
+
+
+def other_panel_rects(skip_id, settings=None):
+    """Screen rects of the other panels that are running right now."""
+    s = settings or load_settings()
+    running = {argv[argv.index("--panel") + 1] for _pid, argv in _process_argvs()
+               if "--panel" in argv and argv.index("--panel") + 1 < len(argv)}
+    out = []
+    for x in s.get("panels", []):
+        if x.get("id") == skip_id or x.get("id") not in running:
+            continue
+        x = normalize_panel(dict(x))
+        try:
+            out.append(panel_rect(x, QRectF(screen_for(x["screen"]).availableGeometry())))
+        except Exception:
+            continue
+    return out
+
+
+class SnapGuides(QWidget):
+    """See-through, click-through overlay that draws the snap guide lines across the screen while a panel moves."""
+
+    def __init__(self, color):
+        super().__init__()
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.WindowStaysOnTopHint
+                            | Qt.WindowTransparentForInput | Qt.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setWindowTitle("themeforge-guides")
+        self.color = QColor(color)
+        self.guides = []
+
+    def show_guides(self, guides, screen_geom):
+        if self.geometry() != screen_geom:
+            self.setGeometry(screen_geom)
+        if guides != self.guides:
+            self.guides = guides
+            self.update()
+        if not self.isVisible():
+            self.show()
+
+    def paintEvent(self, e):
+        if not self.guides:
+            return
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.Antialiasing)
+        o = QPointF(self.geometry().topLeft())
+        for kind, at, a, b in self.guides:
+            if kind == "v":
+                p1, p2 = QPointF(at, a) - o, QPointF(at, b) - o
+            else:
+                p1, p2 = QPointF(a, at) - o, QPointF(b, at) - o
+            glow = QColor(self.color)
+            glow.setAlphaF(0.25)
+            qp.setPen(QPen(glow, 5, Qt.SolidLine, Qt.RoundCap))
+            qp.drawLine(p1, p2)
+            qp.setPen(QPen(self.color, 1.5, Qt.DashLine, Qt.RoundCap))
+            qp.drawLine(p1, p2)
+            qp.setPen(Qt.NoPen)
+            qp.setBrush(self.color)
+            for pt in (p1, p2):
+                qp.drawEllipse(pt, 3, 3)
+        qp.end()
+
+
 class PanelWindow(DesktopWindow):
     """Clickable desktop panel (launcher, now playing, clock, system, weather, calendar, countdown, drives,
     network graph or notes)."""
@@ -4632,6 +4754,7 @@ class PanelWindow(DesktopWindow):
         self.weather, self.weather_error, self.weather_key = None, None, None
         self.fade, self.fade_target = 0.0, 0.0
         self.moving, self.drag_offset = False, None
+        self.snap_others, self.snapped, self.guides = [], False, None
         self.month_offset, self.month_anim = 0, 0.0
         self.drives, self.drive_shown = [], {}
         self.net_hist, self.net_prev, self.net_t, self.net_max = [], None, 0.0, 0.0
@@ -5007,7 +5130,7 @@ class PanelWindow(DesktopWindow):
     def mouseMoveEvent(self, e):
         if self.moving:
             if self.drag_offset is not None:
-                self.move((e.globalPosition() - self.drag_offset).toPoint())
+                self.drag_to(e.globalPosition())
             return
         h = self.hit(e.position())
         if h != self.hover:
@@ -5035,15 +5158,46 @@ class PanelWindow(DesktopWindow):
         self.moving = True
         self.fade = self.fade_target = 0.0
         self.setCursor(Qt.SizeAllCursor)
+        try:
+            self.snap_others = other_panel_rects(self.item_id)
+        except Exception as err:
+            print(f"snapping: {err}", file=sys.stderr)
+            self.snap_others = []
+        self.update()
+
+    def drag_to(self, global_pos):
+        """Follow the mouse, snapping into line with other panels and the screen (hold Shift to place freely)."""
+        top_left = global_pos - self.drag_offset
+        m = GLOW_MARGIN
+        body = QRectF(top_left.x() + m, top_left.y() + m, self.width() - 2 * m, self.height() - 2 * m)
+        scr = QGuiApplication.screenAt(global_pos.toPoint()) or self.screen()
+        guides = []
+        if not (QApplication.keyboardModifiers() & Qt.ShiftModifier):
+            dx, dy, guides = snap_move(body, self.snap_others, QRectF(scr.availableGeometry()))
+            top_left += QPointF(dx, dy)
+        self.snapped = bool(guides)
+        self.move(top_left.toPoint())
+        if guides:
+            if self.guides is None:
+                self.guides = SnapGuides(self.shown_palette()["accent"])
+            self.guides.show_guides(guides, scr.geometry())
+        elif self.guides is not None:
+            self.guides.hide()
+
+    def end_move(self):
+        self.drag_offset = None
+        self.moving = False
+        self.setCursor(Qt.ArrowCursor)
+        if self.guides is not None:
+            self.guides.close()
+            self.guides = None
+        self.save_position()
+        self.snapped = False
         self.update()
 
     def mouseReleaseEvent(self, e):
         if self.moving and self.drag_offset is not None:
-            self.drag_offset = None
-            self.moving = False
-            self.setCursor(Qt.ArrowCursor)
-            self.save_position()
-            self.update()
+            self.end_move()
 
     def save_position(self):
         """Turn where the window was dropped into offsets for its alignment, snapped to 4 px."""
@@ -5055,10 +5209,11 @@ class PanelWindow(DesktopWindow):
               "right": g.right() + 1 - r.right() - 1}[horiz]
         gy = {"top": r.top() - g.top(), "middle": r.top() - (g.top() + (g.height() - r.height()) / 2),
               "bottom": g.bottom() + 1 - r.bottom() - 1}[vert]
+        step = 1 if self.snapped else 4          # keep snapped panels exactly in line; otherwise a 4 px grid
         s = load_settings()
         for x in s["panels"]:
             if x["id"] == self.item_id:
-                x["gap_x"], x["gap_y"] = int(round(gx / 4) * 4), int(round(gy / 4) * 4)
+                x["gap_x"], x["gap_y"] = int(round(gx / step) * step), int(round(gy / step) * step)
         save_settings(s)
 
     def mousePressEvent(self, e):

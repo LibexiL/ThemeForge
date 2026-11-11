@@ -74,7 +74,7 @@ Every panel can be customized:
 - **Look:** background (solid, gradient, frosted glass, outline), highlight color, font, text size, corner radius, drop shadow.
 - **Motion:** entrance (fade, slide, pop), animation speed, breathing glow, animated shimmer outline, glow with the bass, and fade-out while the mouse is over it.
 
-To place a panel, right-click it on the desktop → **Move this panel** and drag it where you want.
+To place a panel, right-click it on the desktop, choose **Move this panel**, and drag it where you want. It snaps into line with your other panels (matching edges or centers, or side by side with an even gap) and with the screen's edges and center, and guide lines show what it lined up with. Hold **Shift** to place it freely.
 
 ### Music visualizers
 

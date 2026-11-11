@@ -1,5 +1,5 @@
 Name:           themeforge
-Version:        2.7.0
+Version:        2.8.0
 Release:        1%{?dist}
 Summary:        One palette for kitty, cava, KDE Plasma, widgets, panels and visualizers
 
@@ -51,6 +51,9 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/themeforge.desktop
 %{_datadir}/applications/themeforge.desktop
 
 %changelog
+* Tue Nov 10 2026 LibexiL <LibexiL@users.noreply.github.com> - 2.8.0-1
+- Snap panels into line while moving them
+
 * Tue Nov 10 2026 LibexiL <LibexiL@users.noreply.github.com> - 2.7.0-1
 - Lyrics panel
 
