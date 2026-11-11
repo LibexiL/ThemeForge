@@ -50,7 +50,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
                                QScrollArea, QSpinBox, QSplitter, QTabWidget,
                                QToolButton, QVBoxLayout, QWidget)
 
-VERSION = "2.6.1"
+VERSION = "2.7.0"
 # GitHub "owner/repo" the auto-updater checks for new releases
 GITHUB_REPO = "LibexiL/ThemeForge"
 IS_WINDOWS = sys.platform == "win32"
@@ -1195,7 +1195,7 @@ def screen_for(name):
 PANEL_KINDS = [("launcher", "Games launcher"), ("nowplaying", "Now playing card"), ("clock", "Clock"),
                ("system", "System gauges"), ("weather", "Weather"), ("calendar", "Calendar"),
                ("countdown", "Countdown"), ("drives", "Drives"), ("network", "Network graph"),
-               ("notes", "Notes & to-do")]
+               ("notes", "Notes & to-do"), ("lyrics", "Lyrics")]
 SYSTEM_METRICS = [("cpu", "CPU"), ("ram", "RAM"), ("gpu", "GPU"), ("cputemp", "CPU temp"),
                   ("gputemp", "GPU temp"), ("disk", "Disk"), ("net", "Network"), ("cores", "CPU threads")]
 if IS_WINDOWS:            # Windows doesn't expose CPU temperature without extra drivers
@@ -1238,7 +1238,10 @@ def panel_template(kind="launcher"):
          # network graph
          "graph_seconds": 60, "graph_height": 80,
          # notes
-         "notes_file": "~/Notes/desktop.md", "max_lines": 14}
+         "notes_file": "~/Notes/desktop.md", "max_lines": 14,
+         # lyrics
+         "lyrics_size": 15, "lyrics_height": 320, "lyrics_align": "left", "lyrics_wipe": True, "lyrics_hl": "fg",
+         "lyrics_header": True, "lyrics_offset": 0}
     defaults = {
         "launcher": dict(name="Games", title="GAMES"),
         "nowplaying": dict(name="Now playing", title="NOW PLAYING", alignment="bottom_right", gap_y=220, width=400),
@@ -1250,6 +1253,7 @@ def panel_template(kind="launcher"):
         "drives": dict(name="Drives", title="DRIVES", alignment="middle_right", gap_y=60, width=340),
         "network": dict(name="Network", title="NETWORK", alignment="middle_right", gap_y=-160, width=340),
         "notes": dict(name="Notes", title="NOTES", alignment="middle_left", width=320, background="frosted"),
+        "lyrics": dict(name="Lyrics", alignment="middle_right", gap_y=120, width=420, background="frosted"),
     }
     if kind not in defaults:
         kind = p["kind"] = "launcher"
@@ -1716,6 +1720,12 @@ def panel_layout(panel, n_items=0):
             rows.append((kind_, text, idx, QRectF(pad, y, W - 2 * pad, h)))
             y += h
         lay["note_rows"] = rows
+    elif kind == "lyrics":
+        if panel["lyrics_header"]:
+            lay["lyric_head"] = QRectF(pad, y, W - 2 * pad, 18)
+            y += 24
+        lay["lyrics"] = QRectF(pad, y, W - 2 * pad, max(80, panel["lyrics_height"]))
+        y += lay["lyrics"].height()
     return lay, QRectF(0, 0, W, y + pad)
 
 
@@ -1932,7 +1942,7 @@ def _paint_panel(qp, origin, panel, p, state):
     painter = {"launcher": _paint_launcher, "nowplaying": _paint_nowplaying, "clock": _paint_clock,
                "system": _paint_system, "weather": _paint_weather, "calendar": _paint_calendar,
                "countdown": _paint_countdown, "drives": _paint_drives, "network": _paint_network,
-               "notes": _paint_notes}[panel["kind"]]
+               "notes": _paint_notes, "lyrics": _paint_lyrics}[panel["kind"]]
     painter(qp, lay, panel, p, state, t if anim else 0.0, anim)
     qp.restore()
     if state.get("moving"):
@@ -1944,6 +1954,113 @@ def _paint_panel(qp, origin, panel, p, state):
         qp.drawText(full, Qt.AlignCenter, "Drag to move · click to drop")
     qp.restore()
     return full
+
+
+# ── lyrics ─────────────────────────────────────────────────────────
+
+def _paint_lyrics(qp, lay, panel, p, state, t, anim):
+    fg, mu, ac = p["foreground"], p["muted"], p["accent"]
+    np, ly = state.get("np"), state.get("lyrics") or {}
+    hits = state.get("lyric_hits")
+    if hits is not None:
+        hits.clear()
+    area = lay["lyrics"]
+    if "lyric_head" in lay:
+        qp.setFont(_font(9))
+        qp.setPen(QColor(mu))
+        head = " · ".join(x for x in ((np or {}).get("title"), (np or {}).get("artist")) if x) or "Lyrics"
+        qp.drawText(lay["lyric_head"], Qt.AlignLeft | Qt.AlignVCenter,
+                    QFontMetricsF(qp.font()).elidedText(head, Qt.ElideRight, lay["lyric_head"].width()))
+    align = Qt.AlignHCenter if panel["lyrics_align"] == "center" else Qt.AlignLeft
+
+    def message(text, big=None):
+        if big:
+            qp.setFont(_font(panel["lyrics_size"] * 1.6, True))
+            qp.setPen(QColor(ac))
+            qp.drawText(area.adjusted(0, 0, 0, -area.height() * 0.15), Qt.AlignCenter, big)
+        qp.setFont(_font(10))
+        qp.setPen(QColor(mu))
+        r = area.adjusted(0, area.height() * (0.35 if big else 0), 0, 0)
+        qp.drawText(r, Qt.AlignCenter | Qt.TextWordWrap, text)
+
+    if not np or np.get("status") == "Stopped" or not np.get("title"):
+        return message("Play something to see its lyrics here.")
+    st = ly.get("state", "loading")
+    if st == "loading":
+        return message("Looking for lyrics…")
+    if st == "none":
+        return message(f"No lyrics found for “{np['title']}”.")
+    if st == "error":
+        return message("Couldn't reach the lyrics service.\nTrying again in a minute.")
+    if st == "instrumental":
+        return message("Instrumental", big="♪")
+    lines, synced = ly["lines"], st == "synced"
+    pos = (np.get("position") or 0.0) + panel["lyrics_offset"] / 1000
+    cur = lyric_index(lines, pos) if synced else -1
+    font = _font(panel["lyrics_size"], True)
+    qp.setFont(font)
+    fm = QFontMetricsF(font)
+    lh = fm.height() * 1.06
+    gap = lh * 0.7
+    blocks, y = [], 0.0
+    for _ts, text in lines:
+        rows = wrap_text(fm, text or "♪", area.width())
+        blocks.append((y, rows))
+        y += len(rows) * lh + gap
+    scroll = state.get("lyric_scroll")
+    if scroll is None:
+        scroll = lyric_scroll(lines, pos, synced, np.get("length"))
+    i0 = int(clamp(math.floor(scroll), 0, len(blocks) - 1))
+    frac = scroll - i0
+    ytop = blocks[i0][0] + (frac * (blocks[i0 + 1][0] - blocks[i0][0]) if i0 + 1 < len(blocks) else 0)
+    base = area.top() + area.height() * 0.3 - ytop
+    fade = min(56.0, area.height() * 0.2)
+    sung = QColor(ac if panel["lyrics_hl"] == "accent" else fg)
+    hover = state.get("hover")
+    qp.save()
+    qp.setClipRect(area)
+    for i, (by, rows) in enumerate(blocks):
+        top = base + by
+        h = len(rows) * lh
+        if top + h < area.top() - lh or top > area.bottom() + lh:
+            continue
+        ts, text = lines[i]
+        if synced:
+            alpha = 1.0 if i == cur else (0.32 if i < cur else 0.45)
+            if hover == ("lyric", ts) and i != cur:
+                alpha = 0.75
+        else:
+            alpha = 0.85
+        if not text:                                          # a gap: ♪ that breathes while it's current
+            alpha *= (0.55 + 0.45 * math.sin(t * 3.2)) if i == cur and anim else 1.0
+        prog = lyric_wipe(lines, i, pos, np.get("length")) if (i == cur and panel["lyrics_wipe"] and text) else None
+        widths = [fm.horizontalAdvance(r) for r in rows]
+        filled = (prog or 0.0) * sum(widths)
+        for k, row in enumerate(rows):
+            ry = top + k * lh
+            mid = ry + lh / 2
+            edge = clamp(min(mid - area.top(), area.bottom() - mid) / fade)
+            if edge <= 0:
+                continue
+            qp.setOpacity(alpha * edge)
+            rw = widths[k]
+            x0 = area.left() + ((area.width() - rw) / 2 if align == Qt.AlignHCenter else 0)
+            rr = QRectF(x0, ry, rw + 2, lh)
+            if prog is None:
+                qp.setPen(sung if (i == cur and synced) else QColor(fg))
+            else:
+                fill = clamp(filled, 0, rw)
+                filled -= rw
+                g = QLinearGradient(x0 + fill - 10, 0, x0 + fill + 10, 0)
+                g.setColorAt(0, sung)
+                g.setColorAt(1, _alpha(fg, 0.42))
+                qp.setPen(QPen(QBrush(g), 1))
+            qp.drawText(rr, Qt.AlignLeft | Qt.AlignVCenter, row)
+        if synced and hits is not None:
+            vis = QRectF(area.left(), top, area.width(), h).intersected(area)
+            if vis.height() > 4:
+                hits.append((vis, ts))
+    qp.restore()
 
 
 # ── launcher ───────────────────────────────────────────────────────
@@ -2884,7 +3001,7 @@ def _paint_cores(qp, lay, p, state, t, anim):
 # ── album art / now playing data ───────────────────────────────────
 
 NP_FORMAT = ("{{status}}\t{{xesam:title}}\t{{xesam:artist}}\t{{mpris:artUrl}}\t{{mpris:length}}\t"
-             "{{position}}\t{{playerName}}")
+             "{{position}}\t{{playerName}}\t{{xesam:album}}")
 
 
 def parse_np(out):
@@ -2899,7 +3016,7 @@ def parse_np(out):
         except ValueError:
             return None
     return {"status": f[0], "title": f[1], "artist": f[2], "art": f[3], "length": secs(f[4]),
-            "position": secs(f[5]), "player": f[6] if len(f) > 6 else ""}
+            "position": secs(f[5]), "player": f[6] if len(f) > 6 else "", "album": f[7] if len(f) > 7 else ""}
 
 
 def fetch_art(url):
@@ -2925,6 +3042,200 @@ def fetch_art(url):
         for stale in old[:-150]:
             stale.unlink(missing_ok=True)
     return f
+
+
+# ── lyrics (LRCLIB) ────────────────────────────────────────────────
+
+LYRICS_DIR = CACHE_DIR / "lyrics"
+LRCLIB = "https://lrclib.net"
+_LRC_STAMP = re.compile(r"\[(\d+):(\d+(?:[.:]\d+)?)\]")
+_LRC_WORD = re.compile(r"<\d+:\d+(?:[.:]\d+)?>")
+_TITLE_JUNK = re.compile(r"\s*[(\[][^()\[\]]*\b(official|video|audio|lyrics?|visuali[sz]er|mv|hd|4k|hq|explicit|"
+                         r"clean version|live session)\b[^()\[\]]*[)\]]", re.I)
+_FEAT = re.compile(r"\s*(?:[(\[]\s*(?:feat\.?|ft\.?|featuring|with)\s[^)\]]*[)\]]|\s(?:feat\.?|ft\.?|featuring)\s.*$)",
+                   re.I)
+LYRICS_STATES = ("loading", "synced", "plain", "instrumental", "none", "error")
+SAMPLE_LYRICS = [(0.0, "This is the lyrics panel"), (3.2, "Lines scroll by in time with the song"),
+                 (6.6, "and the one being sung fills in"), (9.8, "word by word as it goes"), (13.0, ""),
+                 (16.0, "Click any line to jump to it"), (19.4, "Lyrics come from LRCLIB,"),
+                 (22.6, "a free and open lyrics database"), (26.0, "")]
+
+
+def _squash(s):
+    return re.sub(r"[^0-9a-z]+", "", (s or "").lower())
+
+
+def clean_track(title, artist):
+    """What players report → what a lyrics database knows. Browsers and YouTube give things like
+    'Band - "Song" (Official Music Video)' by 'BandVEVO'."""
+    t, a = (title or "").strip(), (artist or "").strip()
+    a = re.sub(r"\s*-\s*Topic$", "", a)
+    a = re.sub(r"(?<=[a-z])VEVO$", "", a).strip()
+    t = _TITLE_JUNK.sub("", t)
+    m = re.match(r"^(.+?)\s+[-–—|]\s+(.+)$", t)
+    if m:
+        head = _squash(m.group(1))
+        if not a or head == _squash(a) or (head and (head in _squash(a) or _squash(a) in head)):
+            a, t = m.group(1).strip(), m.group(2).strip()
+    t = _FEAT.sub("", t)
+    t = t.strip().strip("\"'“”‘’").strip()
+    a = re.split(r"\s*(?:,|&|\bx\b|\bfeat\.?|\bft\.?)\s*", a)[0].strip() or a
+    return t, a
+
+
+def parse_lrc(text):
+    """LRC → [(seconds, line)], sorted. Handles several stamps per line, [offset:], and word-level <mm:ss> tags.
+    An empty line is a gap (shown as ♪)."""
+    offset, out = 0.0, []
+    for raw in (text or "").splitlines():
+        m = re.match(r"\s*\[offset:\s*([+-]?\d+)\s*\]", raw, re.I)
+        if m:
+            offset = int(m.group(1)) / 1000
+            continue
+        stamps = _LRC_STAMP.findall(raw)
+        if not stamps:
+            continue
+        body = _LRC_WORD.sub("", _LRC_STAMP.sub("", raw)).strip()
+        body = re.sub(r"\s{2,}", " ", body)
+        for mm, ss in stamps:
+            out.append((max(0.0, int(mm) * 60 + float(ss.replace(":", ".")) - offset), body))
+    out.sort(key=lambda x: x[0])
+    tidy = []
+    for t, line in out:                       # collapse runs of gaps
+        if not line and tidy and not tidy[-1][1]:
+            continue
+        tidy.append((t, line))
+    while tidy and not tidy[-1][1]:
+        tidy.pop()
+    return tidy
+
+
+def lyrics_from_record(rec):
+    if not rec:
+        return {"state": "none", "lines": []}
+    if rec.get("syncedLyrics"):
+        lines = parse_lrc(rec["syncedLyrics"])
+        if lines:
+            return {"state": "synced", "lines": [list(x) for x in lines]}
+    if rec.get("plainLyrics"):
+        return {"state": "plain", "lines": [[None, x.strip()] for x in rec["plainLyrics"].splitlines()]}
+    if rec.get("instrumental"):
+        return {"state": "instrumental", "lines": []}
+    return {"state": "none", "lines": []}
+
+
+def best_lyrics_record(recs, length=None):
+    """The search result most likely to be this recording: synced first, then the closest length."""
+    def fits(r):
+        return not length or not r.get("duration") or abs(r["duration"] - length) <= 20
+    cands = [r for r in recs or [] if fits(r) and (r.get("syncedLyrics") or r.get("plainLyrics")
+                                                     or r.get("instrumental"))]
+    if not cands:
+        return None
+    return min(cands, key=lambda r: (0 if r.get("syncedLyrics") else 1 if r.get("plainLyrics") else 2,
+                                     abs((r.get("duration") or length) - length) if length else 0))
+
+
+def lrclib_get(path, params, timeout=10):
+    """GET an LRCLIB endpoint; None on 404."""
+    import urllib.parse
+    url = f"{LRCLIB}{path}?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(url, headers={"User-Agent": f"ThemeForge v{VERSION} (https://github.com/{GITHUB_REPO})"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read(4 * 1024 * 1024))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+
+
+def lyrics_cache_file(title, artist):
+    key = f"{_squash(title)}|{_squash(artist)}"
+    return LYRICS_DIR / (hashlib.sha1(key.encode()).hexdigest() + ".json")
+
+
+def fetch_lyrics(title, artist, album="", length=None, http=None):
+    """Lyrics for a song: {"state": synced|plain|instrumental|none, "lines": [[seconds or None, text]]}.
+    Found lyrics are cached for good; "not found" is cached for a day (LRCLIB keeps adding songs)."""
+    http = http or lrclib_get
+    t, a = clean_track(title, artist)
+    if not t:
+        return {"state": "none", "lines": []}
+    f = lyrics_cache_file(t, a)
+    try:
+        cached = json.loads(f.read_text(encoding="utf-8"))
+        if cached.get("state") != "none" or time.time() - cached.get("time", 0) < 86400:
+            return cached
+    except (OSError, ValueError):
+        pass
+    length = length if length and 1 <= length <= 3600 else None
+    rec = None
+    base = {"track_name": t, "artist_name": a} if a else None
+    if base:
+        for extra in ([{"album_name": album}] if album else []) + [{}]:
+            params = dict(base, **extra)
+            if length:
+                params["duration"] = round(length)
+            rec = http("/api/get", params)
+            if rec:
+                break
+    if not rec:
+        rec = best_lyrics_record(http("/api/search", base or {"track_name": t}), length)
+    if not rec and a:
+        rec = best_lyrics_record(http("/api/search", {"q": f"{a} {t}"}), length)
+    res = lyrics_from_record(rec)
+    res.update(title=t, artist=a, time=time.time())
+    try:
+        LYRICS_DIR.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(res), encoding="utf-8")
+    except OSError:
+        pass
+    return res
+
+
+def lyric_index(lines, pos):
+    """Index of the line being sung at `pos` seconds (-1 before the first)."""
+    import bisect
+    return bisect.bisect_right([ln[0] for ln in lines], pos) - 1
+
+
+def lyric_scroll(lines, pos, synced=True, length=None, glide=0.45):
+    """Float line index the panel is scrolled to: it glides to each new line as it starts."""
+    if not lines:
+        return 0.0
+    if not synced:
+        return clamp((pos or 0) / length, 0, 1) * (len(lines) - 1) if length else 0.0
+    i = lyric_index(lines, pos)
+    if i < 0:
+        return 0.0
+    k = clamp((pos - lines[i][0]) / glide)
+    return max(0.0, i - 1 + ease_out(k)) if i > 0 else 0.0
+
+
+def lyric_wipe(lines, i, pos, length=None):
+    """0..1: how much of line i has been sung (a steady wipe, sped up for short lines)."""
+    if i < 0 or i >= len(lines):
+        return 0.0
+    start = lines[i][0]
+    nxt = lines[i + 1][0] if i + 1 < len(lines) else (length or start + 6)
+    dur = max(0.4, min(nxt - start, 0.6 + 0.075 * len(lines[i][1] or "")))
+    return clamp((pos - start) / dur)
+
+
+def wrap_text(fm, text, width):
+    """Greedy word wrap with QFontMetricsF."""
+    words, rows, cur = text.split(), [], ""
+    for w in words:
+        trial = f"{cur} {w}" if cur else w
+        if cur and fm.horizontalAdvance(trial) > width:
+            rows.append(cur)
+            cur = w
+        else:
+            cur = trial
+    if cur or not rows:
+        rows.append(cur)
+    return rows
 
 
 PLAYERS_HINT = ("Works with any player that shows up in the Windows volume and media controls - Spotify, "
@@ -2978,7 +3289,8 @@ def smtc_snapshot(session, props, art_url, now=None):
     if player.lower().endswith(".exe"):
         player = player[:-4]
     return {"status": status, "title": props.title or "", "artist": props.artist or props.album_artist or "",
-            "art": art_url or "", "length": length, "position": pos, "player": player}
+            "art": art_url or "", "length": length, "position": pos, "player": player,
+            "album": getattr(props, "album_title", "") or ""}
 
 
 async def _smtc_read_thumbnail(ref):
@@ -4297,6 +4609,7 @@ class PanelWindow(DesktopWindow):
     """Clickable desktop panel (launcher, now playing, clock, system, weather, calendar, countdown, drives,
     network graph or notes)."""
     art_ready = Signal(str, object)
+    lyrics_ready = Signal(str, object)
     stats_ready = Signal(object)
     weather_ready = Signal(object, object)
 
@@ -4323,6 +4636,7 @@ class PanelWindow(DesktopWindow):
         self.drives, self.drive_shown = [], {}
         self.net_hist, self.net_prev, self.net_t, self.net_max = [], None, 0.0, 0.0
         self.check_anim = {}
+        self.lyrics, self.lyrics_key, self.lyric_hits = None, None, []
         self.notes_watch = QFileSystemWatcher(self)
         self.notes_watch.fileChanged.connect(lambda *_: self.notes_changed())
         self.notes_watch.directoryChanged.connect(lambda *_: self.notes_changed())
@@ -4340,6 +4654,7 @@ class PanelWindow(DesktopWindow):
         self.weather_timer = QTimer(self)
         self.weather_timer.timeout.connect(self.fetch_weather)
         self.art_ready.connect(self.on_art)
+        self.lyrics_ready.connect(self.on_lyrics)
         self.stats_ready.connect(self.on_stats)
         self.weather_ready.connect(self.on_weather)
         if not self.check_reload():
@@ -4358,7 +4673,7 @@ class PanelWindow(DesktopWindow):
         kind = panel["kind"]
         if kind == "launcher" and (not old or old["folder"] != panel["folder"]):
             self.load_items()
-        if kind == "nowplaying" and not self.media.running():
+        if kind in ("nowplaying", "lyrics") and not self.media.running():
             self.media.start()
         if kind == "system" and self.stats_thread is None:
             self.stats_thread = threading.Thread(target=self.stats_loop, daemon=True)
@@ -4389,7 +4704,7 @@ class PanelWindow(DesktopWindow):
         if kind == "calendar":
             self.slow.setInterval(60_000)
             self.slow.start()
-        elif kind in ("clock", "nowplaying", "weather", "countdown", "network") and not panel["animations"]:
+        elif kind in ("clock", "nowplaying", "lyrics", "weather", "countdown", "network") and not panel["animations"]:
             self.slow.setInterval(1000)
             self.slow.start()
         else:
@@ -4418,7 +4733,7 @@ class PanelWindow(DesktopWindow):
             return False
         if p["shimmer"] or p.get("pulse") or p["kind"] in ("clock", "weather", "countdown", "network"):
             return True
-        if p["kind"] == "nowplaying":
+        if p["kind"] in ("nowplaying", "lyrics"):
             return bool(self.np and self.np["status"] == "Playing")
         return False
 
@@ -4502,7 +4817,7 @@ class PanelWindow(DesktopWindow):
                 "moving": self.moving, "month_offset": self.month_offset, "month_anim": self.month_anim,
                 "drives": self.drives, "drive_shown": self.drive_shown, "net_hist": self.net_hist,
                 "net_max": self.net_max, "net_phase": clamp(time.monotonic() - self.net_t),
-                "check_anim": self.check_anim}
+                "check_anim": self.check_anim, "lyrics": self.lyrics, "lyric_hits": self.lyric_hits}
 
     # ── drives, network, notes
     def sample_data(self):
@@ -4569,8 +4884,41 @@ class PanelWindow(DesktopWindow):
                 threading.Thread(target=work, daemon=True).start()
             else:
                 self.art_prev, self.art, self.art_mix = self.art, None, 0.0
+        if self.panel and self.panel["kind"] == "lyrics":
+            self.want_lyrics()
         if self.np and self.np["status"] == "Playing" and not was_playing:
             self.kick()
+        self.update()
+
+    def want_lyrics(self):
+        np = self.np or {}
+        if not np.get("title"):
+            return
+        key = f"{np['title']}\n{np.get('artist', '')}"
+        if key == self.lyrics_key:
+            return
+        self.lyrics_key, self.lyrics = key, {"state": "loading", "lines": []}
+
+        def work(k=key, n=dict(np)):
+            try:
+                res = fetch_lyrics(n["title"], n.get("artist", ""), n.get("album", ""), n.get("length"))
+            except Exception as e:
+                print(f"lyrics: {e}", file=sys.stderr)
+                res = {"state": "error", "lines": []}
+            self.lyrics_ready.emit(k, res)
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_lyrics(self, key, res):
+        if key != self.lyrics_key:
+            return
+        self.lyrics = res
+        if res.get("state") == "error":
+            def retry(k=key):
+                if self.lyrics_key == k:
+                    self.lyrics_key = None
+                    self.want_lyrics()
+            QTimer.singleShot(60_000, retry)
+        self.kick()
         self.update()
 
     def on_art(self, url, path):
@@ -4643,7 +4991,13 @@ class PanelWindow(DesktopWindow):
         qp.end()
 
     def hit(self, pos):
-        return panel_hit(self.panel, len(self.items), QPointF(pos.x() - GLOW_MARGIN, pos.y() - GLOW_MARGIN))
+        pt = QPointF(pos.x() - GLOW_MARGIN, pos.y() - GLOW_MARGIN)
+        h = panel_hit(self.panel, len(self.items), pt)
+        if h is None and self.panel["kind"] == "lyrics":
+            for r, ts in self.lyric_hits:
+                if r.contains(pt):
+                    return ("lyric", ts)
+        return h
 
     def enterEvent(self, e):
         if self.panel and self.panel.get("hover_fade") and not self.moving:
@@ -4664,6 +5018,8 @@ class PanelWindow(DesktopWindow):
                 self.hover_amt.setdefault(h[1], 0.0)
             elif h and h[0] == "forecast":
                 self.setToolTip("Open the full forecast")
+            elif h and h[0] == "lyric":
+                self.setToolTip(f"Jump to {fmt_time(h[1])}")
             else:
                 self.setToolTip("")
             self.kick()
@@ -4728,6 +5084,8 @@ class PanelWindow(DesktopWindow):
             self.media.command(kind)
         elif kind == "seek" and self.np and self.np.get("length"):
             self.media.command("seek", arg * self.np["length"])
+        elif kind == "lyric":
+            self.media.command("seek", max(0.0, arg - self.panel["lyrics_offset"] / 1000 + 0.05))
         elif kind == "forecast":
             QDesktopServices.openUrl(QUrl(weather_url(self.panel["location"], fmt=False)))
         elif kind == "month":
@@ -4741,6 +5099,16 @@ class PanelWindow(DesktopWindow):
                     self.notes_changed()
             except OSError as err:
                 print(f"notes: {err}", file=sys.stderr)
+
+    def refetch_lyrics(self):
+        np = self.np or {}
+        if np.get("title"):
+            try:
+                lyrics_cache_file(*clean_track(np["title"], np.get("artist", ""))).unlink()
+            except OSError:
+                pass
+        self.lyrics_key = None
+        self.want_lyrics()
 
     def context_menu(self, pos):
         m = QMenu(self)
@@ -4760,6 +5128,8 @@ class PanelWindow(DesktopWindow):
                 lambda: (setattr(self, "month_offset", 0), self.update()))
         if self.panel["kind"] == "drives":
             m.addAction("Refresh").triggered.connect(self.sample_data)
+        if self.panel["kind"] == "lyrics":
+            m.addAction("Search for the lyrics again").triggered.connect(self.refetch_lyrics)
         m.addAction("Move this panel").triggered.connect(self.start_move)
         m.addAction("Edit in ThemeForge").triggered.connect(
             lambda: subprocess.Popen(self_command(), **QUIET))
@@ -8557,6 +8927,9 @@ class PanelPreview(QWidget):
         length = 214.0
         np = {"status": "Playing", "title": "A song title long enough to scroll across the card",
               "artist": "Artist name", "art": "", "length": length, "position": (self.t * 4) % length}
+        if panel["kind"] == "lyrics":
+            np = {"status": "Playing", "title": "Song title", "artist": "Artist", "art": "", "length": 28.0,
+                  "position": self.t % 28.0}
         glow = bass_level(fake_spectrum(24, self.t)) if (panel["glow"] or panel["kind"] == "nowplaying") else 0.0
         stats = fake_stats(self.t)
         qp.scale(scale, scale)
@@ -8567,7 +8940,8 @@ class PanelPreview(QWidget):
                                         "shown": {m: v[0] for m, v in stats.items() if m != "net"},
                                         "weather": sample_weather(panel["weather_units"]),
                                         "drives": self.drives, "net_hist": hist,
-                                        "net_max": max(max(h) for h in hist) * 1.15, "net_phase": self.t % 1.0})
+                                        "net_max": max(max(h) for h in hist) * 1.15, "net_phase": self.t % 1.0,
+                                        "lyrics": {"state": "synced", "lines": SAMPLE_LYRICS}})
         qp.end()
 
 
@@ -8595,6 +8969,13 @@ class PanelsTab(QWidget):
         "network": [("graph_seconds", "int", "History", (10, 600, " s")),
                     ("graph_height", "int", "Graph height", (30, 300, " px"))],
         "notes": [("notes_file", "file", "Notes file", None), ("max_lines", "int", "Show up to", (1, 60, " lines"))],
+        "lyrics": [("lyrics_size", "int", "Text size", (8, 48, " pt")),
+                   ("lyrics_height", "int", "Height", (80, 1600, " px")),
+                   ("lyrics_align", "combo", "Align", [("left", "Left"), ("center", "Center")]),
+                   ("lyrics_wipe", "bool", "Fill in the words as they're sung", None),
+                   ("lyrics_hl", "combo", "Sung words", [("fg", "Text color"), ("accent", "Highlight color")]),
+                   ("lyrics_header", "bool", "Show the song name", None),
+                   ("lyrics_offset", "int", "Timing adjust", (-10000, 10000, " ms"))],
     }
     LOOK = [("name", "text", "Name", None), ("title", "text", "Title", None),
             ("width", "int", "Width", (120, 2000, " px")), ("background", "combo", "Background", BACKGROUNDS),
@@ -8946,8 +9327,9 @@ class PanelsTab(QWidget):
     def run(self):
         if not self.cur:
             return
-        if self.cur["kind"] == "nowplaying" and not media_available():
-            QMessageBox.information(self, *missing_dep("media", "The now playing card"))
+        if self.cur["kind"] in ("nowplaying", "lyrics") and not media_available():
+            QMessageBox.information(self, *missing_dep("media", "The lyrics panel" if self.cur["kind"] == "lyrics"
+                                                       else "The now playing card"))
         if self.cur["kind"] == "launcher":
             Path(os.path.expanduser(self.cur["folder"])).mkdir(parents=True, exist_ok=True)
         self.win.save_now()
@@ -10246,6 +10628,13 @@ def run_selftest(report_path=None):
             raise RuntimeError("not found")
         return {"config": str(path), "selected": wpe_selected(path)}
     check("Wallpaper Engine install", wpe_install, required=False)
+
+    def lyrics_service():
+        res = fetch_lyrics("Bohemian Rhapsody", "Queen", "A Night at the Opera", 355)
+        if res["state"] not in ("synced", "plain"):
+            raise RuntimeError(f"no lyrics ({res['state']})")
+        return {"state": res["state"], "lines": len(res["lines"])}      # counts only, never the words
+    check("lyrics service (LRCLIB)", lyrics_service, required=False)
     check("media source available", lambda: media_available() or (_ for _ in ()).throw(RuntimeError("no")),
           required=IS_WINDOWS)
     check("audio capture available", lambda: audio_available() or (_ for _ in ()).throw(RuntimeError("no")),

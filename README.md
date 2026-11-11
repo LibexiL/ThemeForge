@@ -68,6 +68,7 @@ Panels are animated, clickable windows on your desktop, drawn by ThemeForge in y
 | Drives | Free space on every drive, detected automatically. |
 | Network graph | Live download and upload, scrolling smoothly. |
 | Notes & to-do | Shows a Markdown file. Click checkboxes to tick them off in the file itself. |
+| Lyrics | Synced lyrics for whatever's playing, from [LRCLIB](https://lrclib.net). The current line fills in word by word, and you can click a line to jump to it. |
 
 Every panel can be customized:
 - **Look:** background (solid, gradient, frosted glass, outline), highlight color, font, text size, corner radius, drop shadow.

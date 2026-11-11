@@ -1,5 +1,5 @@
 Name:           themeforge
-Version:        2.6.1
+Version:        2.7.0
 Release:        1%{?dist}
 Summary:        One palette for kitty, cava, KDE Plasma, widgets, panels and visualizers
 
@@ -51,6 +51,9 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/themeforge.desktop
 %{_datadir}/applications/themeforge.desktop
 
 %changelog
+* Tue Nov 10 2026 LibexiL <LibexiL@users.noreply.github.com> - 2.7.0-1
+- Lyrics panel
+
 * Wed Nov 04 2026 LibexiL <LibexiL@users.noreply.github.com> - 2.6.1-1
 - Windows: UTF-8 logs for background processes
 

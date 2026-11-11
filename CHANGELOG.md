@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.7.0] - 2026-11-10
+
+### Added
+- **Lyrics panel.** Shows the lyrics of whatever's playing, scrolling in time with the song.
+  - The line being sung lights up and fills in word by word. Sung lines fade back, and the panel glides to each new line.
+  - Click a line to jump to that part of the song.
+  - Instrumental breaks show a breathing ♪.
+  - Lyrics come from [LRCLIB](https://lrclib.net), a free and open lyrics database. Songs with only plain lyrics scroll along with the song instead.
+  - Cleans up titles from browsers and YouTube ("Band - Song (Official Video)" by "BandVEVO") before searching.
+  - Lyrics are cached once found. Songs with no lyrics are checked again after a day, or right away with "Search for the lyrics again" in the panel's right-click menu.
+  - **Options:** text size, height, left or centered text, fill-in on or off, sung words in your text or highlight color, the song name above, and a timing adjustment for players that report the position early or late.
+- The now playing data includes the album, which makes lyrics matches more precise.
+
 ## [2.6.1] - 2026-11-04
 
 ### Fixed
