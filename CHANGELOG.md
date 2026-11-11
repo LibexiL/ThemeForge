@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.9.0] - 2026-11-10
+
+### Added
+- **Choose what each visualizer listens to** (Visualizers tab → Audio → Listen to):
+  - **Everything playing**, as before.
+  - **A specific output device**, for example only your headphones.
+  - **An input device**: a microphone, line-in or capture card.
+  - **Windows only:**
+    - **Only certain apps**: for example, just Spotify and your browser.
+    - **Everything except certain apps**: for example, leave out Discord voice chat or a game.
+    - Both use Windows' own per-app recording (Windows 10 version 2004 or newer). They follow apps as they start and quit, and include anything an app starts itself (browser tabs, for example).
+    - **Pick…** lists the apps that are playing sound right now.
+  - On Linux, device choice goes to cava (PulseAudio/PipeWire sources). Choosing apps isn't available there.
+- The self-test checks that one app's audio can be recorded and lists the apps that are playing sound.
+
 ## [2.8.0] - 2026-11-10
 
 ### Added

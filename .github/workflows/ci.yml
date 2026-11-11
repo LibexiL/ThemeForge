@@ -57,7 +57,7 @@ jobs:
         run: |
           python -m PyInstaller --noconfirm --clean --windowed --name ThemeForge `
             --icon packaging\windows\themeforge.ico `
-            --collect-submodules winrt --hidden-import pyaudiowpatch themeforge.py
+            --collect-submodules winrt --collect-submodules comtypes --collect-submodules pycaw --hidden-import pyaudiowpatch themeforge.py
       - name: Self-test the built app
         if: always()
         env:

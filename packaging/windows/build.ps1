@@ -13,7 +13,7 @@ if ($LASTEXITCODE) { throw "pip failed" }
 
 python -m PyInstaller --noconfirm --clean --windowed --name ThemeForge `
     --icon packaging\windows\themeforge.ico `
-    --collect-submodules winrt --hidden-import pyaudiowpatch `
+    --collect-submodules winrt --collect-submodules comtypes --collect-submodules pycaw --hidden-import pyaudiowpatch `
     themeforge.py
 if ($LASTEXITCODE) { throw "PyInstaller failed" }
 

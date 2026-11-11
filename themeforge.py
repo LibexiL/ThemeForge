@@ -50,7 +50,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QColorDialog, QComboBox,
                                QScrollArea, QSpinBox, QSplitter, QTabWidget,
                                QToolButton, QVBoxLayout, QWidget)
 
-VERSION = "2.8.0"
+VERSION = "2.9.0"
 # GitHub "owner/repo" the auto-updater checks for new releases
 GITHUB_REPO = "LibexiL/ThemeForge"
 IS_WINDOWS = sys.platform == "win32"
@@ -3729,14 +3729,14 @@ class AudioFeed(QObject):
         self.proc.readyReadStandardOutput.connect(self._read)
         self.proc.finished.connect(lambda *_: QTimer.singleShot(2000, self._start))
 
-    def configure(self, bars, framerate=60, smoothing=77, stereo=False):
-        conf = (bars, framerate, smoothing, stereo)
+    def configure(self, bars, framerate=60, smoothing=77, stereo=False, source=("default", "", ())):
+        conf = (bars, framerate, smoothing, stereo, tuple(source))
         if conf == self.conf:
             return
         self.conf = conf
         VIS_DIR.mkdir(parents=True, exist_ok=True)
         self.cfg.write_text(cava_raw_config({"bars": bars, "framerate": framerate, "smoothing": smoothing,
-                                             "stereo": stereo}), encoding="utf-8")
+                                             "stereo": stereo, "source": tuple(source)}), encoding="utf-8")
         self.stop()
         self._start()
 
@@ -3816,10 +3816,354 @@ class Spectrum:
         return [float(v) for v in out]
 
 
+# ── choosing what a visualizer listens to ──────────────────────────
+
+AUDIO_MODES = [("default", "Everything playing"), ("output", "A specific output device"),
+               ("input", "An input device (microphone, line-in)")]
+if IS_WINDOWS:
+    AUDIO_MODES += [("apps", "Only certain apps"), ("except", "Everything except certain apps")]
+
+
+def audio_source(v):
+    """The part of a visualizer's settings that decides what it hears (hashable, so a change restarts capture)."""
+    mode = v.get("audio_mode", "default")
+    if mode not in dict(AUDIO_MODES):
+        mode = "default"
+    return (mode, v.get("audio_device", "") if mode in ("output", "input") else "",
+            tuple(app_names(v.get("audio_apps", ""))) if mode in ("apps", "except") else ())
+
+
+def app_names(text):
+    """'Discord, chrome.exe;  Spotify' → ['discord', 'chrome', 'spotify']"""
+    out = []
+    for part in re.split(r"[,;\n]+", text or ""):
+        n = part.strip().lower()
+        if n.endswith(".exe"):
+            n = n[:-4]
+        if n and n not in out:
+            out.append(n)
+    return out
+
+
+def _proc_name(p):
+    try:
+        n = p.name().lower()
+    except Exception:
+        return ""
+    return n[:-4] if n.endswith(".exe") else n
+
+
+def process_roots(names, procs=None):
+    """PIDs of the top process of every running app called one of `names` (its children are captured with it)."""
+    import psutil
+    want = set(names)
+    procs = list(procs if procs is not None else psutil.process_iter(["pid", "name"]))
+    by_pid = {p.pid: p for p in procs}
+    roots = []
+    for p in procs:
+        if _proc_name(p) not in want:
+            continue
+        try:
+            parent = by_pid.get(p.ppid())
+        except Exception:
+            parent = None
+        if parent is None or _proc_name(parent) != _proc_name(p):
+            roots.append(p.pid)
+    return sorted(roots)
+
+
+def blocked_by(pid, names, procs_by_pid):
+    """Is process `pid`, or anything that started it, one of the blocked apps?"""
+    seen = set()
+    while pid and pid not in seen and pid in procs_by_pid:
+        seen.add(pid)
+        p = procs_by_pid[pid]
+        if _proc_name(p) in names:
+            return True
+        try:
+            pid = p.ppid()
+        except Exception:
+            return False
+    return False
+
+
+def capture_plan(source, roots_of, session_pids, procs_by_pid, self_pid=None):
+    """What to open for a source: ("device", kind, name) | ("exclude", pid) | ("include", (pids…)).
+    roots_of(names) → root pids; session_pids() → pids that have an audio session right now."""
+    mode, device, apps = source
+    self_pid = self_pid or os.getpid()
+    if mode == "output":
+        return ("device", "output", device)
+    if mode == "input":
+        return ("device", "input", device)
+    if mode == "apps":
+        return ("include", tuple(roots_of(list(apps))))
+    if mode == "except":
+        blocked = roots_of(list(apps))
+        if not blocked:
+            return ("exclude", self_pid)                       # none of them running: everything but ThemeForge
+        if len(blocked) == 1:
+            return ("exclude", blocked[0])                     # Windows can leave out one app (and its children)
+        keep = sorted({pid for pid in session_pids() if pid and not blocked_by(pid, set(apps), procs_by_pid)})
+        return ("include", tuple(keep))                        # several: listen to every other app instead
+    return ("device", "output", "")
+
+
+def audio_devices():
+    """{"output": [names], "input": [names]} the visualizers can listen to."""
+    out = {"output": [], "input": []}
+    if IS_WINDOWS:
+        try:
+            import pyaudiowpatch as pyaudio
+            pa = pyaudio.PyAudio()
+            try:
+                wasapi = pa.get_host_api_info_by_type(pyaudio.paWASAPI)["index"]
+                for i in range(pa.get_device_count()):
+                    d = pa.get_device_info_by_index(i)
+                    if d.get("hostApi") != wasapi:
+                        continue
+                    name = re.sub(r"\s*\[Loopback\]$", "", d["name"])
+                    if d.get("isLoopbackDevice"):
+                        out["output"].append(name)
+                    elif d.get("maxInputChannels", 0) > 0:
+                        out["input"].append(name)
+            finally:
+                pa.terminate()
+        except Exception as e:
+            print(f"audio devices: {e}", file=sys.stderr)
+        return out
+    try:
+        text = subprocess.run(["pactl", "list", "sources"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return out
+    for block in text.split("\n\n"):
+        name = re.search(r"^\s*Name:\s*(.+)$", block, re.M)
+        desc = re.search(r"^\s*Description:\s*(.+)$", block, re.M)
+        if not name:
+            continue
+        n = name.group(1).strip()
+        label = f"{desc.group(1).strip()}  ({n})" if desc else n
+        out["output" if n.endswith(".monitor") else "input"].append(label)
+    return out
+
+
+def device_id(label):
+    """Linux labels look like 'Description  (pulse.source.name)'; cava needs the name."""
+    m = re.search(r"\(([^()]+)\)\s*$", label or "")
+    return m.group(1) if m and not IS_WINDOWS else (label or "")
+
+
+def audio_apps_playing():
+    """Names of the apps that have an audio session right now (for the app picker)."""
+    names = []
+    if IS_WINDOWS:
+        try:
+            from pycaw.pycaw import AudioUtilities
+            for sess in AudioUtilities.GetAllSessions():
+                if sess.Process is not None:
+                    n = _proc_name(sess.Process)
+                    if n and n not in names:
+                        names.append(n)
+        except Exception as e:
+            print(f"audio sessions: {e}", file=sys.stderr)
+        return sorted(names)
+    try:
+        text = subprocess.run(["pactl", "list", "sink-inputs"], capture_output=True, text=True, timeout=5).stdout
+        for m in re.finditer(r'application\.process\.binary = "([^"]+)"', text):
+            if m.group(1).lower() not in names:
+                names.append(m.group(1).lower())
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return sorted(names)
+
+
+def _session_pids():
+    from pycaw.pycaw import AudioUtilities
+    return [s.ProcessId for s in AudioUtilities.GetAllSessions() if s.ProcessId]
+
+
+# ── Windows process loopback (record only some apps, or all but one) ─
+
+_PLB = {}
+
+
+def _process_loopback_api():
+    """WASAPI process-loopback COM definitions, built on first use (Windows 10 2004+ and Windows 11)."""
+    if _PLB:
+        return _PLB
+    import ctypes
+    from ctypes import POINTER, c_int, c_long, c_longlong, c_uint32, c_uint64, c_void_p, wintypes
+    import comtypes
+    from comtypes import COMMETHOD, GUID, HRESULT, IUnknown, COMObject
+
+    class WAVEFORMATEX(ctypes.Structure):
+        _pack_ = 1
+        _fields_ = [("wFormatTag", wintypes.WORD), ("nChannels", wintypes.WORD),
+                    ("nSamplesPerSec", wintypes.DWORD), ("nAvgBytesPerSec", wintypes.DWORD),
+                    ("nBlockAlign", wintypes.WORD), ("wBitsPerSample", wintypes.WORD), ("cbSize", wintypes.WORD)]
+
+    class ACTIVATION_PARAMS(ctypes.Structure):          # AUDIOCLIENT_ACTIVATION_PARAMS
+        _fields_ = [("ActivationType", c_int), ("TargetProcessId", wintypes.DWORD),
+                    ("ProcessLoopbackMode", c_int)]
+
+    class PROPVARIANT_BLOB(ctypes.Structure):
+        _fields_ = [("vt", ctypes.c_ushort), ("r1", ctypes.c_ushort), ("r2", ctypes.c_ushort),
+                    ("r3", ctypes.c_ushort), ("cbSize", ctypes.c_ulong), ("pBlobData", c_void_p)]
+
+    class IAudioCaptureClient(IUnknown):
+        _iid_ = GUID("{C8ADBD64-E71E-48A0-A4DE-185C395CD317}")
+        _methods_ = [
+            COMMETHOD([], HRESULT, "GetBuffer", (["out"], POINTER(POINTER(ctypes.c_byte)), "data"),
+                      (["out"], POINTER(c_uint32), "frames"), (["out"], POINTER(wintypes.DWORD), "flags"),
+                      (["out"], POINTER(c_uint64), "devpos"), (["out"], POINTER(c_uint64), "qpcpos")),
+            COMMETHOD([], HRESULT, "ReleaseBuffer", (["in"], c_uint32, "frames")),
+            COMMETHOD([], HRESULT, "GetNextPacketSize", (["out"], POINTER(c_uint32), "frames")),
+        ]
+
+    class IAudioClient(IUnknown):
+        _iid_ = GUID("{1CB9AD4C-DBFA-4C32-B178-C2F568A703B2}")
+        _methods_ = [
+            COMMETHOD([], HRESULT, "Initialize", (["in"], c_int, "mode"), (["in"], wintypes.DWORD, "flags"),
+                      (["in"], c_longlong, "buffer"), (["in"], c_longlong, "period"),
+                      (["in"], POINTER(WAVEFORMATEX), "fmt"), (["in"], POINTER(GUID), "session")),
+            COMMETHOD([], HRESULT, "GetBufferSize", (["out"], POINTER(c_uint32), "n")),
+            COMMETHOD([], HRESULT, "GetStreamLatency", (["out"], POINTER(c_longlong), "latency")),
+            COMMETHOD([], HRESULT, "GetCurrentPadding", (["out"], POINTER(c_uint32), "n")),
+            COMMETHOD([], HRESULT, "IsFormatSupported", (["in"], c_int, "mode"), (["in"], POINTER(WAVEFORMATEX), "fmt"),
+                      (["out"], POINTER(POINTER(WAVEFORMATEX)), "closest")),
+            COMMETHOD([], HRESULT, "GetMixFormat", (["out"], POINTER(POINTER(WAVEFORMATEX)), "fmt")),
+            COMMETHOD([], HRESULT, "GetDevicePeriod", (["out"], POINTER(c_longlong), "default"),
+                      (["out"], POINTER(c_longlong), "minimum")),
+            COMMETHOD([], HRESULT, "Start"),
+            COMMETHOD([], HRESULT, "Stop"),
+            COMMETHOD([], HRESULT, "Reset"),
+            COMMETHOD([], HRESULT, "SetEventHandle", (["in"], wintypes.HANDLE, "event")),
+            COMMETHOD([], HRESULT, "GetService", (["in"], POINTER(GUID), "iid"),
+                      (["out"], POINTER(POINTER(IUnknown)), "service")),
+        ]
+
+    class IActivateAudioInterfaceAsyncOperation(IUnknown):
+        _iid_ = GUID("{72A22D78-CDE4-431D-B8CC-843A71199B6D}")
+        _methods_ = [COMMETHOD([], HRESULT, "GetActivateResult", (["out"], POINTER(c_long), "result"),
+                               (["out"], POINTER(POINTER(IUnknown)), "activated"))]
+
+    class IActivateAudioInterfaceCompletionHandler(IUnknown):
+        _iid_ = GUID("{41D949AB-9862-444A-80F6-C261334DA5EB}")
+        _methods_ = [COMMETHOD([], HRESULT, "ActivateCompleted",
+                               (["in"], POINTER(IActivateAudioInterfaceAsyncOperation), "operation"))]
+
+    class IAgileObject(IUnknown):                      # tells Windows the handler may be called from any thread
+        _iid_ = GUID("{94EA2B94-E9CC-49E0-C0FF-EE64CA8F5B90}")
+        _methods_ = []
+
+    class Handler(COMObject):
+        _com_interfaces_ = [IActivateAudioInterfaceCompletionHandler, IAgileObject]
+
+        def __init__(self):
+            super().__init__()
+            self.done = threading.Event()
+
+        def ActivateCompleted(self, this, operation):
+            self.done.set()
+            return 0
+
+    activate = ctypes.WinDLL("Mmdevapi.dll").ActivateAudioInterfaceAsync
+    activate.argtypes = [wintypes.LPCWSTR, POINTER(GUID), POINTER(PROPVARIANT_BLOB),
+                         POINTER(IActivateAudioInterfaceCompletionHandler),
+                         POINTER(POINTER(IActivateAudioInterfaceAsyncOperation))]
+    activate.restype = c_long
+    k32 = ctypes.WinDLL("kernel32")
+    k32.CreateEventW.restype = wintypes.HANDLE
+    k32.CreateEventW.argtypes = [c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    _PLB.update(ctypes=ctypes, comtypes=comtypes, WAVEFORMATEX=WAVEFORMATEX, ACTIVATION_PARAMS=ACTIVATION_PARAMS,
+                PROPVARIANT_BLOB=PROPVARIANT_BLOB, IAudioClient=IAudioClient, IAudioCaptureClient=IAudioCaptureClient,
+                IActivateAudioInterfaceAsyncOperation=IActivateAudioInterfaceAsyncOperation,
+                IActivateAudioInterfaceCompletionHandler=IActivateAudioInterfaceCompletionHandler,
+                Handler=Handler, activate=activate, k32=k32)
+    return _PLB
+
+
+class ProcessLoopback:
+    """Records what one app (and the processes it started) plays, or everything except that app."""
+    RATE, CHANNELS = 44100, 2
+
+    def __init__(self, pid, exclude=False):
+        api = _process_loopback_api()
+        ct = api["ctypes"]
+        self.api, self.pid = api, pid
+        self.params = api["ACTIVATION_PARAMS"](1, pid, 1 if exclude else 0)   # PROCESS_LOOPBACK, INCLUDE/EXCLUDE
+        self.pv = api["PROPVARIANT_BLOB"](vt=65, cbSize=ct.sizeof(self.params),     # VT_BLOB
+                                          pBlobData=ct.cast(ct.pointer(self.params), ct.c_void_p))
+        self.handler = api["Handler"]()
+        op = ct.POINTER(api["IActivateAudioInterfaceAsyncOperation"])()
+        hr = api["activate"]("VAD\\Process_Loopback", ct.byref(api["IAudioClient"]._iid_), ct.byref(self.pv),
+                             self.handler.QueryInterface(api["IActivateAudioInterfaceCompletionHandler"]),
+                             ct.byref(op))
+        if hr < 0:
+            raise OSError(f"couldn't start recording app audio (0x{hr & 0xFFFFFFFF:08X})")
+        if not self.handler.done.wait(5):
+            raise TimeoutError("Windows didn't answer the request to record app audio")
+        result, unk = op.GetActivateResult()
+        if result < 0:
+            raise OSError(f"Windows refused to record app audio (0x{result & 0xFFFFFFFF:08X})")
+        self.client = unk.QueryInterface(api["IAudioClient"])
+        r, ch = self.RATE, self.CHANNELS
+        self.fmt = api["WAVEFORMATEX"](1, ch, r, r * ch * 2, ch * 2, 16, 0)            # 16-bit PCM
+        flags = 0x00020000 | 0x00040000 | 0x80000000 | 0x08000000      # LOOPBACK, EVENTCALLBACK, AUTOCONVERTPCM, SRC
+        self.client.Initialize(0, flags, 1_000_000, 0, ct.byref(self.fmt), None)
+        self.event = api["k32"].CreateEventW(None, False, False, None)
+        self.client.SetEventHandle(self.event)
+        self.capture = self.client.GetService(ct.byref(api["IAudioCaptureClient"]._iid_)).QueryInterface(
+            api["IAudioCaptureClient"])
+        self.client.Start()
+
+    def read(self):
+        """Everything recorded since the last call, as float32 frames (n, 2)."""
+        import numpy as np
+        ct = self.api["ctypes"]
+        chunks = []
+        for _ in range(64):
+            if not self.capture.GetNextPacketSize():
+                break
+            data, frames, flags, _dev, _qpc = self.capture.GetBuffer()
+            if frames:
+                if flags & 0x2:                                          # AUDCLNT_BUFFERFLAGS_SILENT
+                    chunks.append(np.zeros((frames, self.CHANNELS), np.float32))
+                else:
+                    raw = np.ctypeslib.as_array(ct.cast(data, ct.POINTER(ct.c_int16)), shape=(frames * self.CHANNELS,))
+                    chunks.append((raw.astype(np.float32) / 32768.0).reshape(-1, self.CHANNELS))
+            self.capture.ReleaseBuffer(frames)
+        return np.concatenate(chunks) if chunks else np.zeros((0, self.CHANNELS), np.float32)
+
+    def close(self):
+        try:
+            self.client.Stop()
+        except Exception:
+            pass
+        self.capture = self.client = None
+        if getattr(self, "event", None):
+            self.api["k32"].CloseHandle(self.event)
+            self.event = None
+
+
+def probe_process_loopback():
+    """Self-test: can this PC record a single app's audio? (Records this process for a moment.)"""
+    import comtypes
+    comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
+    s = ProcessLoopback(os.getpid())
+    try:
+        time.sleep(0.2)
+        return {"frames": int(len(s.read()))}
+    finally:
+        s.close()
+
+
 class LoopbackFeed(QObject):
-    """Windows stand-in for AudioFeed: listens to what the speakers play (WASAPI loopback) and emits
-    each frame as a list of 0..1 values. Same interface as AudioFeed."""
+    """Windows stand-in for AudioFeed: listens to what the speakers play (WASAPI loopback), a chosen device, or
+    chosen apps, and emits each frame as a list of 0..1 values. Same interface as AudioFeed."""
     frame = Signal(list)
+    SCAN_EVERY = 3.0          # seconds between checks for apps starting or quitting
 
     def __init__(self, key, parent=None):
         super().__init__(parent)
@@ -3828,8 +4172,8 @@ class LoopbackFeed(QObject):
         self.stop_ev = None
         self.thread = None
 
-    def configure(self, bars, framerate=60, smoothing=77, stereo=False):
-        conf = (bars, framerate, smoothing, stereo)
+    def configure(self, bars, framerate=60, smoothing=77, stereo=False, source=("default", "", ())):
+        conf = (bars, framerate, smoothing, stereo, tuple(source))
         if conf == self.conf:
             return
         self.conf = conf
@@ -3847,13 +4191,40 @@ class LoopbackFeed(QObject):
                 stop_ev.wait(3)
 
     def _capture(self, conf, stop_ev):
+        if conf[4][0] in ("apps", "except"):
+            return self._capture_apps(conf, stop_ev)
+        return self._capture_device(conf, stop_ev)
+
+    @staticmethod
+    def find_device(pa, kind, name):
+        """A WASAPI device by the name shown in ThemeForge: an output's loopback, or an input. Default if blank."""
+        import pyaudiowpatch as pyaudio
+        if kind == "output" and not name:
+            return pa.get_default_wasapi_loopback()
+        wasapi = pa.get_host_api_info_by_type(pyaudio.paWASAPI)
+        devices = [pa.get_device_info_by_index(i) for i in range(pa.get_device_count())]
+        devices = [d for d in devices if d.get("hostApi") == wasapi["index"]]
+        if kind == "output":
+            if name:
+                for d in devices:
+                    if d.get("isLoopbackDevice") and re.sub(r"\s*\[Loopback\]$", "", d["name"]) == name:
+                        return d
+                print(f"audio capture: {name} isn't connected - using the default speakers", file=sys.stderr)
+            return pa.get_default_wasapi_loopback()
+        for d in devices:
+            if not d.get("isLoopbackDevice") and d.get("maxInputChannels", 0) > 0 and (not name or d["name"] == name):
+                if name or d["index"] == wasapi.get("defaultInputDevice"):
+                    return d
+        raise RuntimeError(f"no input device {name!r}" if name else "no microphone or line-in found")
+
+    def _capture_device(self, conf, stop_ev):
         import numpy as np
         import pyaudiowpatch as pyaudio
-        bars, framerate, smoothing, stereo = conf
+        bars, framerate, smoothing, stereo, source = conf
         pa = pyaudio.PyAudio()
         stream = None
         try:
-            dev = pa.get_default_wasapi_loopback()
+            dev = self.find_device(pa, "input" if source[0] == "input" else "output", source[1])
             rate, ch = int(dev["defaultSampleRate"]), max(1, min(2, int(dev["maxInputChannels"])))
             spec = Spectrum(bars, rate, stereo, smoothing)
             hop = max(64, rate // max(10, framerate))
@@ -3884,6 +4255,66 @@ class LoopbackFeed(QObject):
             if stream is not None:
                 stream.close()
             pa.terminate()
+
+    def _capture_apps(self, conf, stop_ev):
+        """Only some apps, or everything except some: one process-loopback recording per app, mixed together.
+        Re-checks every few seconds, so apps that start or quit are picked up."""
+        import comtypes
+        import numpy as np
+        import psutil
+        bars, framerate, smoothing, stereo, source = conf
+        comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
+        ch = ProcessLoopback.CHANNELS
+        spec = Spectrum(bars, ProcessLoopback.RATE, stereo, smoothing)
+        hop = max(64, ProcessLoopback.RATE // max(10, framerate))
+        period = 1.0 / max(10, framerate)
+        streams, plan, next_scan = {}, None, 0.0
+
+        def sessions():
+            try:
+                return _session_pids()
+            except Exception as e:
+                print(f"audio sessions: {e}", file=sys.stderr)
+                return []
+        try:
+            nxt = time.monotonic()
+            while not stop_ev.is_set():
+                now = time.monotonic()
+                if now >= next_scan:
+                    next_scan = now + self.SCAN_EVERY
+                    procs = list(psutil.process_iter(["pid", "name"]))
+                    by_pid = {pr.pid: pr for pr in procs}
+                    want = capture_plan(source, lambda names: process_roots(names, procs), sessions, by_pid)
+                    if want != plan:
+                        keys = ({("exclude", want[1])} if want[0] == "exclude"
+                                else {("include", pid) for pid in want[1]})
+                        for k in [k for k in streams if k not in keys]:
+                            streams.pop(k)[0].close()
+                        ok = True
+                        for k in keys - streams.keys():
+                            try:
+                                streams[k] = [ProcessLoopback(k[1], exclude=k[0] == "exclude"),
+                                              np.zeros((spec.n_fft, ch), np.float32), now]
+                            except Exception as e:
+                                ok = False
+                                print(f"audio capture ({k[0]} {k[1]}): {e}", file=sys.stderr)
+                        plan = want if ok else None            # retry the ones that failed next time
+                mix = np.zeros((spec.n_fft, ch), np.float32)
+                for st in streams.values():
+                    new = st[0].read()[-spec.n_fft:]
+                    if len(new):
+                        st[2] = now
+                    elif now - st[2] > 2 * period:
+                        new = np.zeros((hop, ch), np.float32)     # nothing comes while an app is silent
+                    if len(new):
+                        st[1] = np.concatenate((st[1][len(new):], new))
+                    mix += st[1]
+                self.frame.emit(spec.process(mix))
+                nxt = max(nxt + period, time.monotonic())
+                stop_ev.wait(max(0.0, nxt - time.monotonic()))
+        finally:
+            for st in streams.values():
+                st[0].close()
 
     def stop(self):
         if self.stop_ev:
@@ -3928,7 +4359,8 @@ def vis_template(kind="bottom"):
          "rounded": True, "stereo": False, "flip": False, "color": "gradient", "opacity": 90,
          "smoothing": 77, "framerate": 60, "alignment": "bottom_middle", "gap_x": 0, "gap_y": 0,
          "width": 0, "height": 160, "screen": "", "x11": True, "autostart": False,
-         "glow": False, "wrap": "", "depth": 36, "peaks": False, "spin": 0, "flow": False}
+         "glow": False, "wrap": "", "depth": 36, "peaks": False, "spin": 0, "flow": False,
+         "audio_mode": "default", "audio_device": "", "audio_apps": ""}
     presets = {
         "bottom": dict(name="Bottom bars", bars=96, gap=30, height=150, opacity=85, peaks=True),
         "center": dict(name="Center bars", style="mirror", bars=72, width=1100, height=260,
@@ -3973,7 +4405,14 @@ def cava_raw_config(v):
         "[output]", "method = raw", "raw_target = /dev/stdout", "data_format = ascii",
         "ascii_max_range = 1000", "bar_delimiter = 59", "frame_delimiter = 10",
         f"channels = {'stereo' if v['stereo'] else 'mono'}", "mono_option = average", "",
-        "[smoothing]", f"noise_reduction = {v['smoothing']}", ""])
+        "[smoothing]", f"noise_reduction = {v['smoothing']}", "", *cava_input_lines(v.get("source"))])
+
+
+def cava_input_lines(source):
+    """[input] section for a chosen PulseAudio/PipeWire source (cava listens to the default otherwise)."""
+    if not source or source[0] not in ("output", "input") or not source[1]:
+        return []
+    return ["[input]", "method = pulse", f"source = {device_id(source[1])}", ""]
 
 
 def parse_cava_frame(line):
@@ -4561,7 +5000,7 @@ class VisualizerWindow(DesktopWindow):
         if v is None:
             return False
         self.v = v
-        self.feed.configure(vis_bar_count(v), v["framerate"], v["smoothing"], v["stereo"])
+        self.feed.configure(vis_bar_count(v), v["framerate"], v["smoothing"], v["stereo"], audio_source(v))
         panel = wrapped_panel(v, self.settings.get("panels"))
         scr = screen_for(panel["screen"] if panel else v["screen"])
         self.setGeometry(vis_geometry(v, QRectF(scr.availableGeometry()), self.settings.get("panels")).toRect())
@@ -8675,6 +9114,11 @@ class VisualizersTab(QWidget):
             ("smoothing", "int", "Smoothing", (0, 100, " %")),
             ("framerate", "int", "Frame rate", (10, 144, " fps")),
         ]),
+        ("Audio", [
+            ("audio_mode", "combo", "Listen to", AUDIO_MODES),
+            ("audio_device", "device", "Device", None),
+            *([("audio_apps", "apps", "Apps", None)] if IS_WINDOWS else []),   # cava can't pick apps
+        ]),
         ("Placement", [
             ("wrap", "panel", "Wrap around", None),
             ("depth", "int", "Frame bar length", (6, 300, " px")),
@@ -8744,7 +9188,10 @@ class VisualizersTab(QWidget):
                     f.addRow("", wdg)
                 else:
                     f.addRow(label, wdg)
-                self.inputs[key] = wdg
+                self.inputs[key] = getattr(wdg, "field", wdg)
+            if title == "Audio":
+                self.audio_hint = hint_label("")
+                f.addRow(self.audio_hint)
             mv.addWidget(gb)
         mv.addStretch()
         mid_scroll.setWidget(mid)
@@ -8784,6 +9231,22 @@ class VisualizersTab(QWidget):
         return self.win.settings.setdefault("visualizers", [])
 
     def make_input(self, key, kind, opts):
+        if kind == "apps":
+            w = QWidget()
+            row = QHBoxLayout(w)
+            row.setContentsMargins(0, 0, 0, 0)
+            w.field = QLineEdit()
+            w.field.setPlaceholderText("e.g. discord, chrome")
+            w.field.textEdited.connect(lambda val: self.set_field(key, val))
+            row.addWidget(w.field, 1)
+            self.apps_btn = QPushButton("Pick…")
+            self.apps_btn.clicked.connect(self.pick_apps)
+            row.addWidget(self.apps_btn)
+            return w
+        if kind == "device":
+            w = QComboBox()
+            w.currentIndexChanged.connect(lambda i, box=w: self.set_field(key, box.itemData(i) or ""))
+            return w
         if kind == "text":
             w = QLineEdit()
             w.textEdited.connect(lambda val: self.set_field(key, val))
@@ -8833,9 +9296,64 @@ class VisualizersTab(QWidget):
             box.addItem(f"{x['name']}  ({dict(PANEL_KINDS)[x['kind']].lower()})", x["id"])
         box.blockSignals(False)
 
+    def fill_device_combo(self):
+        box, mode = self.inputs["audio_device"], self.cur.get("audio_mode", "default") if self.cur else "default"
+        box.blockSignals(True)
+        box.clear()
+        if mode in ("output", "input"):
+            box.addItem("Default " + ("speakers / headphones" if mode == "output" else "microphone"), "")
+            for name in audio_devices().get(mode, []):
+                box.addItem(name, name)
+            want = self.cur.get("audio_device", "")
+            if want and box.findData(want) < 0:
+                box.addItem(f"{want} (not connected)", want)
+            box.setCurrentIndex(max(0, box.findData(want)))
+        box.blockSignals(False)
+
+    def pick_apps(self):
+        if not self.cur:
+            return
+        playing = audio_apps_playing()
+        chosen = app_names(self.cur.get("audio_apps", ""))
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Pick apps")
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(hint_label("Apps that are playing sound, or have since they started. Start the app and play "
+                                 "something if yours isn't listed, or type its name (as in Task Manager's Details "
+                                 "tab) in the box instead."))
+        lst = QListWidget()
+        for n in sorted(set(playing) | set(chosen)):
+            it = QListWidgetItem(n)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked if n in chosen else Qt.Unchecked)
+            lst.addItem(it)
+        lay.addWidget(lst)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        lay.addWidget(bb)
+        if dlg.exec() == QDialog.Accepted:
+            names = [lst.item(i).text() for i in range(lst.count()) if lst.item(i).checkState() == Qt.Checked]
+            text = ", ".join(names)
+            self.inputs["audio_apps"].setText(text)
+            self.set_field("audio_apps", text)
+
     def update_enabled(self):
         if not self.cur:
             return
+        mode = self.cur.get("audio_mode", "default")
+        self.inputs["audio_device"].setEnabled(mode in ("output", "input"))
+        if "audio_apps" in self.inputs:
+            self.inputs["audio_apps"].setEnabled(mode in ("apps", "except"))
+            self.apps_btn.setEnabled(mode in ("apps", "except"))
+        self.audio_hint.setText({
+            "default": "Everything your default speakers or headphones play.",
+            "output": "Everything one output device plays - handy when games go to headphones and music to speakers.",
+            "input": "A microphone, line-in or capture card.",
+            "apps": "Only these apps (and anything they start). Needs Windows 10 version 2004 or newer.",
+            "except": "Everything except these apps - e.g. leave out Discord voice chat or a game. Needs Windows 10 "
+                      "version 2004 or newer.",
+        }.get(mode, ""))
         wrapped = bool(self.cur.get("wrap"))
         for key in ("alignment", "gap_x", "gap_y", "width", "height", "screen"):
             self.inputs[key].setEnabled(not wrapped)
@@ -8856,12 +9374,16 @@ class VisualizersTab(QWidget):
                 w.setValue(int(val))
             elif isinstance(w, QCheckBox):
                 w.setChecked(bool(val))
+            elif key == "audio_device":
+                continue                                   # filled below, once the mode is known
             else:
                 idx = w.findData(val)
                 if idx < 0 and key == "screen":
                     w.addItem(f"{val} (not connected)", val)
                     idx = w.count() - 1
                 w.setCurrentIndex(max(0, idx))
+        if self.cur:
+            self.fill_device_combo()
         self.loading = False
         self.update_enabled()
         self.refresh_preview()
@@ -8871,6 +9393,9 @@ class VisualizersTab(QWidget):
         if self.loading or not self.cur:
             return
         self.cur[key] = val
+        if key == "audio_mode":
+            self.cur["audio_device"] = ""
+            self.fill_device_combo()
         if key == "name":
             item = self.vlist.currentItem()
             if item:
@@ -10676,7 +11201,7 @@ def run_selftest(report_path=None):
         mods = ["PySide6.QtWidgets", "psutil"] if IS_WINDOWS else ["PySide6.QtWidgets"]
         if IS_WINDOWS:
             mods += ["numpy", "pyaudiowpatch", "winrt.windows.media.control", "winrt.windows.foundation",
-                     "winrt.windows.storage.streams"]
+                     "winrt.windows.storage.streams", "comtypes", "pycaw.pycaw"]
         import importlib
         return [importlib.import_module(m).__name__ for m in mods]
 
@@ -10783,6 +11308,20 @@ def run_selftest(report_path=None):
             raise RuntimeError("not found")
         return {"config": str(path), "selected": wpe_selected(path)}
     check("Wallpaper Engine install", wpe_install, required=False)
+    if IS_WINDOWS:
+        def app_audio():
+            out = subprocess.run(self_command("--probe-audio") if IS_FROZEN else
+                                 [sys.executable, str(SCRIPT), "--probe-audio"],
+                                 capture_output=True, text=True, timeout=30, **NOWINDOW)
+            lines = [ln for ln in out.stdout.splitlines() if ln.startswith("{")]
+            if not lines:
+                raise RuntimeError(f"probe crashed (exit {out.returncode}): {out.stderr[-300:]}")
+            res = json.loads(lines[-1])
+            if not res["ok"]:
+                raise RuntimeError(res["detail"])
+            return res["detail"]
+        check("record one app's audio (process loopback)", app_audio, required=False)
+        check("apps playing sound (pycaw)", audio_apps_playing, required=False)
 
     def lyrics_service():
         res = fetch_lyrics("Bohemian Rhapsody", "Queen", "A Night at the Opera", 355)
@@ -10908,6 +11447,12 @@ def main():
     fix_stdio()
     if "--version" in args:
         print(f"ThemeForge {VERSION}")
+        return
+    if "--probe-audio" in args:                # run by --selftest in its own process: COM mistakes can't crash it
+        try:
+            print(json.dumps({"ok": True, "detail": probe_process_loopback()}))
+        except Exception as e:
+            print(json.dumps({"ok": False, "detail": f"{type(e).__name__}: {e}"}))
         return
     if "--selftest" in args:
         i = args.index("--selftest")

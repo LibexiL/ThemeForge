@@ -86,7 +86,7 @@ Run as many as you want at once, each in its own click-through window:
 - **Appearance:** palette gradient or a single color, stereo mode with bass in the middle, rounded bars, bass glow, opacity, smoothing and frame rate.
 - **Placement:** any corner or edge, offset in pixels, and choice of monitor.
 
-Audio comes from cava, so anything PipeWire or PulseAudio plays drives them.
+Audio comes from cava, so anything PipeWire or PulseAudio plays drives them. Each visualizer can listen to everything, a specific output device or an input device. On Windows it can also listen to only certain apps, or everything except certain apps (for example, to keep Discord voice chat out).
 
 ### Profiles, album-art mode and the tray icon
 
